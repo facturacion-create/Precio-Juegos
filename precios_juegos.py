@@ -765,19 +765,61 @@ def detectar_juegos(tiendas):
     return salida[:6]
 
 
+BUSCADORES = {"Steam": buscar_steam, "Xbox": buscar_xbox, "Nintendo eShop": buscar_nintendo}
+
+
+def fusionar(tiendas, nuevas, consulta):
+    """Suma a cada tienda los resultados nuevos (sin repetir) y los vuelve a
+    puntuar contra lo que buscó el usuario."""
+    for nt in nuevas:
+        t = next((t for t in tiendas if t["tienda"] == nt["tienda"]), None)
+        if not t or not nt.get("ok"):
+            continue
+        if not t["ok"]:  # la primera vez falló y ahora respondió
+            t.update(ok=True, error=None)
+        urls = {r["url"] for r in t["resultados"]}
+        for r in nt["resultados"]:
+            if r["url"] not in urls:
+                urls.add(r["url"])
+                t["resultados"].append(r)
+        for r in t["resultados"]:
+            r["puntaje"] = puntaje(consulta, r)
+        t["resultados"].sort(key=lambda r: r["puntaje"], reverse=True)
+        t["coincide"] = bool(t["resultados"]) and t["resultados"][0]["puntaje"] >= PUNTAJE_MINIMO
+
+
 def buscar_todo(consulta, pais):
     original = consulta
     consulta = expandir_consulta(consulta)
 
     def hacer():
-        tareas = [
-            _pool.submit(_seguro, "Steam", buscar_steam, consulta, pais),
-            _pool.submit(_seguro, "Xbox", buscar_xbox, consulta, pais),
-            _pool.submit(_seguro, "Nintendo eShop", buscar_nintendo, consulta, pais),
-        ]
+        tareas = [_pool.submit(_seguro, nombre, f, consulta, pais) for nombre, f in BUSCADORES.items()]
         tiendas = []
         for t in tareas:
             tiendas.extend(t.result())
+
+        # Segunda vuelta para no perder juegos que la búsqueda de una tienda escondió.
+        extra = []  # (tienda, texto a buscar)
+        # 1) La secuela más nueva: si aparecen las partes 3, 4 y 5, probar la 6
+        #    (Microsoft solo encuentra 'Grand Theft Auto VI' escrito exacto).
+        base = normalizar(consulta)
+        if not re.search(r"\d", base):
+            numeros = [int(m.group(1)) for t in tiendas for r in t["resultados"]
+                       for m in [re.match(re.escape(base) + r"\s+(\d+)\b", r.get("clave", ""))] if m]
+            if numeros and max(numeros) < 10:
+                siguiente = _A_ROMANO.get(str(max(numeros) + 1))
+                extra += [(n, f"{consulta} {siguiente}") for n in BUSCADORES]
+        # 2) Juegos encontrados en una tienda pero no en otra: buscarlos ahí por su nombre exacto.
+        for g in detectar_juegos(tiendas)[:3]:
+            for t in tiendas:
+                if t["ok"] and not any(r.get("clave") == g["clave"] for r in t["resultados"]):
+                    nombre = next((n for n in BUSCADORES if t["tienda"].startswith(n)), None)
+                    if nombre:
+                        extra.append((nombre, g["titulo"]))
+        extra = list(dict.fromkeys(extra))[:12]
+        if extra:
+            for nuevas in _pool.map(lambda e: _seguro(e[0], BUSCADORES[e[0]], e[1], pais), extra):
+                fusionar(tiendas, nuevas, consulta)
         return {"consulta": original, "buscado": consulta, "pais": pais, "tiendas": tiendas,
                 "juegos": detectar_juegos(tiendas)}
     resultado = dict(cacheado(("buscar", normalizar(consulta), pais), hacer), consulta=original)
