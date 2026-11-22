@@ -886,6 +886,14 @@ details>summary::-webkit-details-marker{display:none}
 .baja{color:var(--ok)}.sube{color:var(--err)}
 .x{background:none;border:none;color:var(--sub);font-size:1.1rem;padding:4px 6px}
 .acciones{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px}
+.alerta{background:var(--okbg);border:1px solid var(--ok);border-radius:16px;padding:12px 14px;margin-top:16px}
+.alerta>b{display:block;margin-bottom:4px}
+.alerta-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--borde);cursor:pointer}
+.alerta-item:first-of-type{border-top:none}
+.alerta-item .t{display:block;font-size:.8rem;color:var(--ok);font-weight:600}
+.alerta-item .p{font-weight:700;white-space:nowrap}
+.nuevo{background:var(--ok);color:#fff;border-radius:6px;padding:1px 5px;font-size:.68rem;font-weight:700;vertical-align:middle}
+.enoferta{color:var(--ok);font-weight:600}
 .tabs{display:flex;gap:6px;margin-top:18px;border-bottom:1px solid var(--borde)}
 .tab{background:none;color:var(--sub);border:none;border-bottom:2px solid transparent;border-radius:0;padding:10px 8px;font-weight:600}
 .tab.activa{color:var(--txt);border-bottom-color:var(--acento)}
@@ -1051,12 +1059,23 @@ function mejorOpcion(datos, clave) {
   return f && comparables ? {tienda: f.nombre, valor: f.c.valor, moneda: f.c.moneda} : null;
 }
 
+// La oferta más barata del juego entre todas las tiendas (o null si no está en oferta).
+function mejorOferta(datos, clave) {
+  const {filas} = opciones(datos, clave);
+  const f = filas.find(f => f.c.valor > 0 && f.c.original);
+  return f ? {tienda: f.nombre, valor: f.c.valor, moneda: f.c.moneda, pct: Math.round((1 - f.c.valor / f.c.original) * 100)} : null;
+}
+
 function actualizarEnBiblioteca(datos, clave) {
   const b = biblioteca(); const j = b.find(j => j.clave === clave && j.pais === datos.pais);
   if (!j) return;
   const m = mejorOpcion(datos, clave);
   if (m && (!j.mejor || Math.round(m.valor) !== Math.round(j.mejor.valor))) j.anterior = j.mejor;
   if (m) j.mejor = m;
+  const o = mejorOferta(datos, clave);
+  // "nueva" = la oferta no estaba la última vez que se revisó (para resaltarla)
+  if (o) o.nueva = !j.oferta || j.oferta.tienda !== o.tienda || j.oferta.pct !== o.pct || !!j.oferta.nueva;
+  j.oferta = o;
   j.fecha = Date.now();
   guardarBiblioteca(b);
 }
@@ -1072,9 +1091,9 @@ function alternarGuardado() {
 let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "50")), filtroTienda = leer("filtroTienda", "todas"), mostrarOfertas = 40;
 
 function pintarInicio() {
-  const tabs = `<div class="tabs"><button class="tab${vista === "mis" ? " activa" : ""}" data-vista="mis">⭐ Mis juegos</button>
+  const tabs = `<div class="tabs"><button class="tab${vista === "mis" ? " activa" : ""}" data-vista="mis">⭐ Mis juegos${(n => n ? ` <span class="nuevo">🔥${n}</span>` : "")(biblioteca().filter(j => j.oferta).length)}</button>
     <button class="tab${vista === "ofertas" ? " activa" : ""}" data-vista="ofertas">🔥 Mega descuentos</button></div>`;
-  return tabs + (vista === "ofertas" ? pintarOfertas() : pintarBiblioteca());
+  return pintarAlertas() + tabs + (vista === "ofertas" ? pintarOfertas() : pintarBiblioteca());
 }
 
 async function cargarOfertas() {
@@ -1117,23 +1136,48 @@ function pintarBiblioteca() {
     const f = new Date(j.fecha).toLocaleDateString("es-AR", {day: "numeric", month: "short"});
     return `<div class="bib-item">
       <div class="info" data-buscar="${esc(j.titulo)}" data-pais="${esc(j.pais)}"><div class="nom">${esc(j.titulo)}</div>
-        <div class="sub">${j.mejor ? `Más barato en ${esc(j.mejor.tienda)}` : "Sin precio"} · ${f}${j.pais !== "AR" ? " · " + esc(PAISES[j.pais]?.nombre || j.pais) : ""}</div></div>
+        <div class="sub">${j.oferta ? `<span class="enoferta">🔥 -${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span>` : j.mejor ? `Más barato en ${esc(j.mejor.tienda)}` : "Sin precio"} · ${f}${j.pais !== "AR" ? " · " + esc(PAISES[j.pais]?.nombre || j.pais) : ""}</div></div>
       <div class="p">${j.mejor ? fmt(j.mejor.valor, j.mejor.moneda) : "—"}${cambio}</div>
       <button class="x" data-borrar="${i}" aria-label="Quitar">✕</button></div>`;
   }).join("")}</div>
-  <div class="acciones"><span class="sub" style="font-size:.78rem;color:var(--sub)">Se guarda en este celular.</span><button class="sec" id="actualizarTodo">↻ Actualizar precios</button></div>`;
+  <div class="acciones"><span class="sub" style="font-size:.78rem;color:var(--sub)">${revisando ? esc(revisando) : "Se revisan solos al abrir la app. Se guarda en este celular."}</span><button class="sec" id="actualizarTodo"${revisando ? " disabled" : ""}>↻ Actualizar</button></div>`;
 }
 
-async function actualizarTodo(boton) {
+/* ---------- Alertas de ofertas de Mis juegos ---------- */
+let revisando = "";
+
+async function revisarBiblioteca() {
   const b = biblioteca();
+  if (!b.length || revisando) return;
   for (let i = 0; i < b.length; i++) {
-    boton.textContent = `Actualizando ${i + 1}/${b.length}…`; boton.disabled = true;
+    revisando = `Revisando precios ${i + 1}/${b.length}…`; if (!ultimo) pintar();
     try {
       const r = await fetch(`/api/buscar?q=${encodeURIComponent(b[i].titulo)}&pais=${b[i].pais}`);
       actualizarEnBiblioteca(await r.json(), b[i].clave);
     } catch {}
   }
-  pintar();
+  revisando = ""; guardar("ultimaRevision", String(Date.now()));
+  if (!ultimo) pintar();
+}
+async function actualizarTodo() { await revisarBiblioteca() }
+
+// Al abrir la app (o volver a ella), revisar Mis juegos si pasó más de media hora.
+function revisarSiHaceFalta() {
+  if (Date.now() - Number(leer("ultimaRevision", "0")) > 30 * 60 * 1000) revisarBiblioteca();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") revisarSiHaceFalta() });
+
+function pintarAlertas() {
+  const enOferta = biblioteca().filter(j => j.oferta && j.pais === $("#pais").value);
+  if (!enOferta.length) return "";
+  return `<div class="alerta"><b>🔥 ${enOferta.length === 1 ? "Un juego de tu lista está" : enOferta.length + " juegos de tu lista están"} en oferta</b>${enOferta.map(j =>
+    `<div class="alerta-item" data-buscar="${esc(j.titulo)}" data-pais="${esc(j.pais)}"><span>${esc(j.titulo)}${j.oferta.nueva ? ' <span class="nuevo">NUEVO</span>' : ""}<span class="t">-${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span></span><span class="p">${fmt(j.oferta.valor, j.oferta.moneda)}</span></div>`).join("")}</div>`;
+}
+
+// Cuando abrís un juego en oferta, deja de marcarse como "NUEVO".
+function marcarVista(clave) {
+  const b = biblioteca(); const j = b.find(j => j.clave === clave);
+  if (j && j.oferta && j.oferta.nueva) { j.oferta.nueva = false; guardarBiblioteca(b) }
 }
 
 /* ---------- Pantalla ---------- */
@@ -1187,7 +1231,7 @@ function pintar() {
     `<li><span><a href="${esc(x.r.url)}" target="_blank" rel="noopener">${esc(x.r.titulo)}</a><span class="t">${esc(x.t.tienda)}</span></span><span>${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")}</ul></details>`;
 
   res.innerHTML = html;
-  if (guardado) actualizarEnBiblioteca(ultimo, juegoSel);
+  if (guardado) { actualizarEnBiblioteca(ultimo, juegoSel); marcarVista(juegoSel) }
 }
 
 /* ---------- Eventos ---------- */
@@ -1218,14 +1262,14 @@ $("#res").addEventListener("click", e => {
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
   else if (el.id === "guardar") alternarGuardado();
   else if (el.id === "volver") { if (history.state && history.state.q) history.back(); else irAlInicio() }
-  else if (el.id === "actualizarTodo") actualizarTodo(el);
+  else if (el.id === "actualizarTodo") actualizarTodo();
 });
 $("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarAjustes(); const q = $("#q").value.trim(); if (q && ultimo) buscar(q); else pintar() });
 $("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); actualizarAjustes(); pintar() });
 $("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarAjustes(); pintar() });
 $("h1").addEventListener("click", () => { if (history.state && history.state.q) history.back(); else irAlInicio() });
 window.addEventListener("popstate", e => { if (e.state && e.state.q) buscar(e.state.q, true); else irAlInicio() });
-actualizarAjustes(); pintar(); cargarDolar();
+actualizarAjustes(); pintar(); cargarDolar().then(revisarSiHaceFalta);
 </script>
 </body>
 </html>

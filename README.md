@@ -45,6 +45,7 @@ En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". L
 - Si no era ese juego, tocá otro en **"¿Buscabas otro?"**.
 - Los DLC y extras están aparte, en **"DLC y extras"**.
 - Tocá **☆ Guardar** para sumar el juego a **Mis juegos** (en la pantalla principal). Con **↻ Actualizar precios** ves si subió o bajó. La lista se guarda en el celular.
+- **Alertas de ofertas:** cada vez que abrís la app, revisa solos los juegos de **Mis juegos**. Si alguno está en oferta en cualquier tienda, aparece arriba un aviso verde (con **NUEVO** si la oferta no estaba la vez anterior).
 - En la pantalla principal, la pestaña **🔥 Mega descuentos** muestra las ofertas de 50% o más (podés filtrar 70% o 90%, y por tienda): los más vendidos en oferta de Steam y las ofertas de la eShop argentina Tocá uno para compararlo en todas las tiendas. Xbox no publica su lista de ofertas, así que la app revisa el precio de todos los juegos del catálogo de Game Pass (que incluye los exclusivos de Xbox, Bethesda y Activision) y de los juegos en oferta en las otras tiendas.
 - En **⚙️ Ajustes** cambiás los impuestos (según tu provincia), cómo pagás los dólares y el país.
 
