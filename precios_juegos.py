@@ -572,6 +572,43 @@ def _descuentos_nintendo(pais, minimo):
     return salida
 
 
+def _descuentos_xbox(titulos, pais):
+    """Microsoft no publica una lista de ofertas, así que se buscan en Xbox los
+    juegos que están en oferta en otras tiendas (las promos suelen coincidir)
+    y se quedan los que también tienen descuento ahí."""
+    locale = PAISES.get(pais, {}).get("locale", "es-AR")
+
+    def ids_de(titulo):
+        try:
+            return _xbox_ids_autosuggest(titulo, pais, locale)[:3]
+        except Exception:
+            return []
+    ids = []
+    for lista in _pool_sub.map(ids_de, titulos):
+        ids.extend(i for i in lista if i not in ids)
+    salida = []
+    for k in range(0, len(ids), 20):
+        url = "https://displaycatalog.mp.microsoft.com/v7.0/products?" + urllib.parse.urlencode({
+            "bigIds": ",".join(ids[k:k + 20]), "market": pais, "languages": locale,
+        })
+        for prod in http_json(url).get("Products", []):
+            if prod.get("ProductKind") != "Game":
+                continue
+            pr = _xbox_precio(prod)
+            if not pr:
+                continue
+            lista_, msrp = float(pr.get("ListPrice") or 0), float(pr.get("MSRP") or 0)
+            if lista_ <= 0 or msrp <= lista_:
+                continue
+            titulo = (prod.get("LocalizedProperties") or [{}])[0].get("ProductTitle", "")
+            salida.append({
+                "tienda": "Xbox", "titulo": titulo, "precio": lista_, "precio_original": msrp,
+                "moneda": pr.get("CurrencyCode", ""), "descuento": round((1 - lista_ / msrp) * 100),
+                "url": f"https://www.xbox.com/{locale}/games/store/x/{prod['ProductId']}",
+            })
+    return salida
+
+
 def mega_descuentos(pais, minimo=50):
     def traer():
         items, errores = [], []
@@ -582,6 +619,12 @@ def mega_descuentos(pais, minimo=50):
             except Exception as e:
                 print(f"[descuentos {nombre}] {type(e).__name__}: {e}", file=sys.stderr)
                 errores.append(f"{nombre}: {describir_error(e)}")
+        try:
+            titulos = sorted({re.sub(r"\s*\(Switch 2\)$", "", i["titulo"]) for i in items})
+            items.extend(_descuentos_xbox(titulos, pais))
+        except Exception as e:
+            print(f"[descuentos Xbox] {type(e).__name__}: {e}", file=sys.stderr)
+            errores.append(f"Xbox: {describir_error(e)}")
         items = [i for i in items if i["descuento"] >= minimo and i["precio"] > 0]
         items.sort(key=lambda i: i["descuento"], reverse=True)
         return {"pais": pais, "minimo": minimo, "items": items, "errores": errores}
@@ -1020,7 +1063,7 @@ function pintarOfertas() {
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
     : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
-    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica una lista de ofertas, pero si un juego está rebajado ahí lo vas a ver al compararlo.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se muestran los juegos en oferta en otras tiendas que también están rebajados en Xbox.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
 }
 
 function pintarBiblioteca() {
@@ -1207,7 +1250,21 @@ class Manejador(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), formato % args))
 
 
+def precalentar_descuentos():
+    """Arma la lista de ofertas apenas arranca el servidor y la renueva cada hora,
+    para que la pestaña Mega descuentos abra rápido."""
+    while True:
+        try:
+            with _cache_lock:
+                _cache.pop(("descuentos", "AR", 50), None)
+            mega_descuentos("AR")
+        except Exception as e:
+            print(f"[precalentar] {type(e).__name__}: {e}", file=sys.stderr)
+        time.sleep(55 * 60)
+
+
 def main():
+    threading.Thread(target=precalentar_descuentos, daemon=True).start()
     puerto = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "0.0.0.0")
     servidor = ThreadingHTTPServer((host, puerto), Manejador)
