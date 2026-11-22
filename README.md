@@ -42,7 +42,9 @@ En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". L
 
 - Para Argentina, todo se muestra **en pesos y con impuestos**, con el desglose: precio de la tienda + IVA + Ingresos Brutos.
 - Desde abril de 2025 los videojuegos digitales **no pagan la percepción del 30%** (RG ARCA 5677). Con tarjeta argentina se paga **IVA 21% + Ingresos Brutos** de tu provincia (2% en CABA y Buenos Aires). Arriba podés cambiar el porcentaje o ver los precios sin impuestos.
-- **Steam** y la **eShop de EE.UU.** cobran en dólares: se pasan a pesos con el **dólar oficial**, que es el que usa la tarjeta. También podés elegir MEP.
+- **Steam** y la **eShop de EE.UU.** cobran en dólares: se pasan a pesos con el **dólar oficial**, que es el que usa la tarjeta. Si pagás con tus propios dólares, elegí **MEP**: el IVA y el IIBB se pagan igual.
+- **Tarjeta Global** (emitida afuera, como AstroPay, Lemon Global, etc.): Steam, Xbox y la eShop argentina **no la aceptan**. La **eShop de EE.UU.** sí, y con ella no se paga IVA ni IIBB. La app muestra esa opción aparte, aproximando la cotización de la billetera con el dólar cripto.
+- Fuente de cómo se cobra cada tienda: [impuestito.org](https://impuestito.org/blog/impuestos-2026-en-steam-playstation-xbox-y-nintendo-argentina).
 - **Xbox** y la **eShop de Argentina** cobran en pesos: se usa ese precio y se le suman los impuestos.
 - Arriba hay un resumen con **todas las opciones ordenadas de más barata a más cara**. Abajo, cada tienda muestra también los otros resultados parecidos (otras ediciones, secuelas, etc.).
 - Las tiendas no tienen una API oficial para esto. Si alguna cambia, esa tarjeta va a mostrar un error y las demás siguen funcionando.

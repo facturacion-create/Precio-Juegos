@@ -143,7 +143,7 @@ def ordenar(consulta, items):
 PUNTAJE_MINIMO = 0.75  # por debajo, el resultado probablemente es otro juego
 
 
-def resultado_tienda(tienda, items=None, error=None, aviso=None, buscar_url=None):
+def resultado_tienda(tienda, items=None, error=None, aviso=None, buscar_url=None, acepta_global=False):
     items = items or []
     return {
         "tienda": tienda,
@@ -153,6 +153,8 @@ def resultado_tienda(tienda, items=None, error=None, aviso=None, buscar_url=None
         "resultados": items,
         "coincide": bool(items) and items[0].get("puntaje", 1) >= PUNTAJE_MINIMO,
         "buscar_url": buscar_url,
+        # Tiendas que aceptan tarjeta Global (emitida afuera): sin IVA ni IIBB.
+        "acepta_global": acepta_global,
     }
 
 
@@ -389,10 +391,11 @@ def buscar_nintendo(consulta, pais):
         if len(paises) > 1:
             nombre = "Nintendo eShop " + ("EE.UU." if p == "US" else PAISES[p]["nombre"])
             if p == "US":
-                aviso = "Precio para una cuenta de Nintendo de EE.UU. (se cobra en dólares)."
+                aviso = "Necesitás una cuenta de Nintendo de EE.UU. Acepta tarjeta Global (sin IVA ni IIBB)."
         salida.append(resultado_tienda(
             nombre, items, aviso=aviso,
             buscar_url="https://www.nintendo.com/us/search/#q=" + urllib.parse.quote(consulta),
+            acepta_global=(p == "US" and pais == "AR"),
         ))
     return salida
 
@@ -404,7 +407,9 @@ def buscar_nintendo(consulta, pais):
 # Con tarjeta argentina, las compras en dólares se convierten al dólar oficial.
 # El "dólar tarjeta" (oficial + 30% de Ganancias) NO aplica a videojuegos desde
 # abril de 2025 (RG ARCA 5677), así que no se usa por defecto.
-TIPOS_DOLAR = {"oficial": "Oficial", "bolsa": "MEP", "tarjeta": "Tarjeta (oficial + 30%)"}
+# "cripto" se usa como aproximación de la cotización de las billeteras con
+# tarjeta Global (emitida afuera), que cada una fija a su manera.
+TIPOS_DOLAR = {"oficial": "Oficial", "bolsa": "MEP", "cripto": "Cripto"}
 
 
 def cotizacion_dolar():
@@ -566,6 +571,7 @@ a{color:inherit}
 .desc{color:var(--ok);font-weight:600;font-size:.9rem;margin-left:6px}
 .det{color:var(--sub);font-size:.82rem}
 .aviso{color:var(--warn);font-size:.82rem;margin-top:6px}
+.global{margin-top:6px;font-size:.92rem}
 .error{color:var(--err)}
 .link{color:var(--acento)}
 .otros{list-style:none;margin:10px 0 0;padding:10px 0 0;border-top:1px solid var(--borde)}
@@ -601,7 +607,7 @@ a{color:inherit}
         <option value="0">Sin impuestos</option>
       </select>
     </label>
-    <label>Dólar para pasar a pesos
+    <label>Cómo pagás los dólares
       <select id="tipoDolar"></select>
     </label>
   </div>
@@ -634,7 +640,8 @@ async function cargarDolar() {
     const r = await fetch("/api/dolar"); dolar = await r.json();
     if (dolar.error) throw 0;
     const sel = $("#tipoDolar"); sel.innerHTML = "";
-    for (const [k, d] of Object.entries(dolar)) sel.add(new Option(d.nombre, k));
+    const etiquetas = {oficial: "Tarjeta (oficial)", bolsa: "Tus dólares (MEP)"};
+    for (const [k, nombre] of Object.entries(etiquetas)) if (dolar[k]) sel.add(new Option(nombre, k));
     const guardado = leer("tipoDolar2", "oficial");
     sel.value = dolar[guardado] ? guardado : Object.keys(dolar)[0];
   } catch { dolar = null }
@@ -647,10 +654,11 @@ function actualizarPanel() {
   if (!dolar) $("#cot").textContent = "No se pudo obtener la cotización del dólar: los precios en dólares no se pasan a pesos.";
   else if (d) {
     const f = d.actualizado ? new Date(d.actualizado).toLocaleString("es-AR", {dateStyle: "short", timeStyle: "short"}) : "";
-    $("#cot").textContent = `1 US$ = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})`;
+    $("#cot").textContent = `1 US$ = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})` +
+      (dolar.cripto ? ` · Tarjeta Global ≈ ${fmt(dolar.cripto.venta, "ARS")} (dólar cripto, varía según la billetera)` : "");
   }
   $("#pie").textContent = esAR()
-    ? "Desde abril de 2025 los videojuegos digitales no pagan la percepción del 30% (RG ARCA 5677): con tarjeta argentina se suma IVA 21% más Ingresos Brutos de tu provincia. Algunos bancos o tarjetas pueden cobrar distinto. Los precios salen de las APIs de cada tienda: confirmá en la tienda antes de comprar."
+    ? "Desde abril de 2025 los videojuegos no pagan la percepción de Ganancias (RG ARCA 5677): con tarjeta argentina o con tus dólares se suma IVA 21% más Ingresos Brutos de tu provincia. Steam, Xbox y la eShop argentina no aceptan tarjeta Global, así que el IVA se paga siempre. La eShop de EE.UU. sí la acepta: con una tarjeta Global no se paga IVA ni IIBB, pero se usa la cotización de esa billetera (acá se aproxima con el dólar cripto). Algunas billeteras suman comisión o dan cashback. Los precios salen de las APIs de cada tienda: confirmá antes de comprar. Más detalle en impuestito.org."
     : "Los precios salen de las APIs de cada tienda y no incluyen impuestos locales. Confirmá en la tienda antes de comprar.";
 }
 
@@ -681,6 +689,12 @@ function calcular(it) {
   };
 }
 
+// Precio con tarjeta Global (sin IVA ni IIBB), solo en tiendas que la aceptan.
+function calcularGlobal(t, it) {
+  if (!esAR() || !t.acepta_global || it.moneda !== "USD" || !(it.precio > 0) || !dolar || !dolar.cripto) return null;
+  return it.precio * dolar.cripto.venta;
+}
+
 function pintar() {
   const res = $("#res");
   if (!ultimo) return;
@@ -691,10 +705,12 @@ function pintar() {
     it: t.coincide ? t.resultados[0] : null,
     resto: t.coincide ? t.resultados.slice(1) : t.resultados,
   }));
-  for (const x of tiendas) x.c = x.it && calcular(x.it);
+  for (const x of tiendas) { x.c = x.it && calcular(x.it); x.g = x.it && calcularGlobal(x.t, x.it); }
 
   // Resumen: el mejor resultado de cada tienda, ordenado por precio final.
+  // Las tiendas que aceptan tarjeta Global suman una segunda opción.
   const enRanking = tiendas.filter(x => x.c && x.c.valor > 0);
+  for (const x of tiendas) if (x.g) enRanking.push({t: {tienda: x.t.tienda + " con tarjeta Global"}, it: x.it, c: {valor: x.g, moneda: "ARS"}, global: true, de: x});
   const monedas = new Set(enRanking.map(x => x.c.moneda));
   let html = "";
   if (enRanking.length > 1 && monedas.size === 1) {
@@ -703,7 +719,8 @@ function pintar() {
       enRanking.map(x => `<li><span>${esc(x.t.tienda)}<span class="t">${esc(x.it.titulo)}</span></span><span class="p">${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")
     }</ol>`;
   }
-  const mejor = enRanking.length > 1 && monedas.size === 1 ? enRanking[0] : null;
+  const primero = enRanking.length > 1 && monedas.size === 1 ? enRanking[0] : null;
+  const mejor = primero && primero.global ? primero.de : primero;
 
   html += `<h2>Detalle por tienda</h2>` + tiendas.map(x => {
     const {t, it, c, resto} = x;
@@ -714,7 +731,8 @@ function pintar() {
       const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
       cuerpo = `<div class="titulo"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.titulo)}</a></div>
         <div><span class="precio">${fmt(c.valor, c.moneda)}</span>${c.original ? `<span class="tachado">${fmt(c.original, c.moneda)}</span><span class="desc">-${pct}%</span>` : ""}</div>
-        ${c.desglose ? `<div class="det">${esc(c.desglose)}</div>` : ""}`;
+        ${c.desglose ? `<div class="det">${esc(c.desglose)}</div>` : ""}
+        ${x.g ? `<div class="global">Con tarjeta Global: <b>${fmt(x.g, "ARS")}</b> <span class="det">(${fmt(x.it.precio, "USD")} al dólar cripto, sin IVA ni IIBB)</span></div>` : ""}`;
     }
     if (t.ok && resto.length) {
       cuerpo += `<ul class="otros">${resto.map(o => {
