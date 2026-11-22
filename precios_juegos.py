@@ -572,10 +572,26 @@ def _descuentos_nintendo(pais, minimo):
     return salida
 
 
+# Listas públicas del catálogo de Game Pass (consola y PC). Incluyen casi todos
+# los juegos de Xbox, Bethesda y Activision, que no están en otras tiendas.
+GAMEPASS_LISTAS = ("f6f1f99f-9b49-4ccd-b3bf-4d9767a77f5e", "fdd9e2a7-0fee-49f6-ad69-4354098401ff")
+
+
+def _xbox_ids_gamepass(pais):
+    ids = []
+    for lista in GAMEPASS_LISTAS:
+        try:
+            datos = http_json(f"https://catalog.gamepass.com/sigls/v2?id={lista}&language=es-ar&market={pais}")
+            ids.extend(x["id"] for x in datos[1:] if isinstance(x, dict) and "id" in x)
+        except Exception as e:
+            print(f"[game pass] {type(e).__name__}: {e}", file=sys.stderr)
+    return ids
+
+
 def _descuentos_xbox(titulos, pais):
-    """Microsoft no publica una lista de ofertas, así que se buscan en Xbox los
-    juegos que están en oferta en otras tiendas (las promos suelen coincidir)
-    y se quedan los que también tienen descuento ahí."""
+    """Microsoft no publica una lista de ofertas. Se revisan los precios de:
+    - los juegos del catálogo de Game Pass (incluye los exclusivos de Xbox), y
+    - los juegos en oferta en otras tiendas (las promos suelen coincidir)."""
     locale = PAISES.get(pais, {}).get("locale", "es-AR")
 
     def ids_de(titulo):
@@ -583,15 +599,25 @@ def _descuentos_xbox(titulos, pais):
             return _xbox_ids_autosuggest(titulo, pais, locale)[:3]
         except Exception:
             return []
-    ids = []
+    ids = list(dict.fromkeys(_xbox_ids_gamepass(pais)))
+    vistos = set(ids)
     for lista in _pool_sub.map(ids_de, titulos):
-        ids.extend(i for i in lista if i not in ids)
-    salida = []
-    for k in range(0, len(ids), 20):
+        for i in lista:
+            if i not in vistos:
+                vistos.add(i)
+                ids.append(i)
+
+    def lote(k):
         url = "https://displaycatalog.mp.microsoft.com/v7.0/products?" + urllib.parse.urlencode({
             "bigIds": ",".join(ids[k:k + 20]), "market": pais, "languages": locale,
         })
-        for prod in http_json(url).get("Products", []):
+        try:
+            return http_json(url).get("Products", [])
+        except Exception:
+            return []
+    salida = []
+    for productos in _pool_sub.map(lote, range(0, len(ids), 20)):
+        for prod in productos:
             if prod.get("ProductKind") != "Game":
                 continue
             pr = _xbox_precio(prod)
@@ -626,7 +652,11 @@ def mega_descuentos(pais, minimo=50):
             print(f"[descuentos Xbox] {type(e).__name__}: {e}", file=sys.stderr)
             errores.append(f"Xbox: {describir_error(e)}")
         items = [i for i in items if i["descuento"] >= minimo and i["precio"] > 0]
-        items.sort(key=lambda i: i["descuento"], reverse=True)
+        # Sin repetidos (en Xbox la versión de consola y la de PC son productos distintos).
+        unicos = {}
+        for i in sorted(items, key=lambda i: i["precio"]):
+            unicos.setdefault((i["tienda"], normalizar(i["titulo"])), i)
+        items = sorted(unicos.values(), key=lambda i: (-i["descuento"], normalizar(i["titulo"])))
         return {"pais": pais, "minimo": minimo, "items": items, "errores": errores}
     return cacheado(("descuentos", pais, minimo), traer, ttl=60 * 60)
 
@@ -1063,7 +1093,7 @@ function pintarOfertas() {
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
     : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
-    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se muestran los juegos en oferta en otras tiendas que también están rebajados en Xbox.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se revisan los juegos del catálogo de Game Pass (incluye los exclusivos) y los que están en oferta en otras tiendas.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
 }
 
 function pintarBiblioteca() {
