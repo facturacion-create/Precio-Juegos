@@ -155,8 +155,14 @@ def es_extra_por_nombre(titulo):
 
 
 def puntaje(consulta, item):
-    """Qué tan parecido es un resultado a lo que se buscó (más alto = mejor)."""
-    q, t = normalizar(consulta), item["clave"]
+    """Qué tan parecido es un resultado a lo que se buscó (más alto = mejor).
+    Se compara lo buscado tal cual y también sin la edición, porque los
+    resultados se comparan sin la edición ('X: Complete Edition' -> 'x')."""
+    return max(_puntaje(normalizar(consulta), item), _puntaje(clave(consulta), item))
+
+
+def _puntaje(q, item):
+    t = item["clave"]
     if not q or not t:
         return 0.0
     s = SequenceMatcher(None, q, t).ratio()
@@ -178,7 +184,8 @@ def preparar(consulta, items, tipo_origen=None):
     for it in items:
         it["clave"] = clave(it["titulo"])
         tipo = it.pop("_tipo", None) or "juego"
-        if tipo != "extra" and es_extra_por_nombre(it["titulo"]):
+        confirmado = it.pop("_es_juego", False)  # la tienda confirma que es un juego
+        if tipo != "extra" and not confirmado and es_extra_por_nombre(it["titulo"]):
             tipo = "extra"
         if tipo == "juego" and it["clave"] != normalizar(it["titulo"]):
             tipo = "edicion"
@@ -367,6 +374,7 @@ def buscar_xbox(consulta, pais):
         solo_pc = "Windows.Xbox" not in plat and "Windows.Desktop" in plat
         items.append({
             "titulo": titulo + (" (solo PC)" if solo_pc else ""),
+            "_es_juego": True,  # Microsoft dice que es un juego (ProductKind = Game), aunque se llame "Lote"
             "precio": lista,
             "precio_original": msrp if msrp > lista else None,
             "moneda": precio.get("CurrencyCode", ""),
@@ -831,7 +839,8 @@ details>summary::-webkit-details-marker{display:none}
 .grilla select{padding:10px;font-size:.92rem;width:100%}
 .cot{font-size:.8rem;margin-top:8px}
 /* Resultado */
-.juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:20px}
+.volver{background:none;color:var(--acento);border:none;padding:6px 0;margin-top:14px;font-weight:600;font-size:.95rem}
+.juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:6px}
 .juego h3{font-size:1.5rem;line-height:1.2;margin:0}
 .guardar{flex:none}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:.85rem;align-items:center;color:var(--sub)}
@@ -1132,9 +1141,10 @@ function pintar() {
   const res = $("#res");
   if (!ultimo) { res.innerHTML = pintarInicio(); return }
   if (ultimo.cargando) { res.innerHTML = '<div class="cargando">Buscando en las tiendas…</div>'; return }
-  if (ultimo.error) { res.innerHTML = `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
+  const volver = '<button class="volver" id="volver">← Volver</button>';
+  if (ultimo.error) { res.innerHTML = volver + `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
   if (!ultimo.juegos.length) {
-    res.innerHTML = `<div class="vacio">No encontré "${esc(ultimo.consulta)}" en ninguna tienda.<br>Probá con el nombre completo o en inglés.</div>`;
+    res.innerHTML = volver + `<div class="vacio">No encontré "${esc(ultimo.consulta)}" en ninguna tienda.<br>Probá con menos palabras o con el nombre en inglés.</div>`;
     return;
   }
   if (!ultimo.juegos.some(g => g.clave === juegoSel)) juegoSel = ultimo.juegos[0].clave;
@@ -1144,7 +1154,7 @@ function pintar() {
   const mejor = comparables && filas.length > 1 && filas[0].c.valor > 0 ? filas[0] : null;
   const guardado = enBiblioteca(juegoSel);
 
-  let html = `<div class="juego"><h3>${esc(g.titulo)}</h3>
+  let html = `<button class="volver" id="volver">← Volver</button><div class="juego"><h3>${esc(g.titulo)}</h3>
     <button class="sec guardar" id="guardar">${guardado ? "★ Guardado" : "☆ Guardar"}</button></div>`;
   const otros = ultimo.juegos.filter(x => x.clave !== juegoSel);
   if (otros.length) html += `<div class="chips">¿Buscabas otro? ${otros.map(x => `<button class="chip" data-juego="${esc(x.clave)}">${esc(x.titulo)}</button>`).join("")}</div>`;
@@ -1181,7 +1191,11 @@ function pintar() {
 }
 
 /* ---------- Eventos ---------- */
-async function buscar(q) {
+function irAlInicio() { $("#q").value = ""; ultimo = null; pintar(); window.scrollTo({top: 0}) }
+
+async function buscar(q, desdeHistorial) {
+  // Guardar en el historial, así el gesto/botón "atrás" del celular vuelve al inicio.
+  if (!desdeHistorial) { try { history.pushState({q}, "", "#" + encodeURIComponent(q)) } catch {} }
   $("#q").value = q; $("#q").blur();
   ultimo = {cargando: true}; juegoSel = null; pintar();
   try {
@@ -1193,7 +1207,7 @@ async function buscar(q) {
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#guardar,#actualizarTodo,#masOfertas");
+  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#guardar,#actualizarTodo,#masOfertas,#volver");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
@@ -1203,12 +1217,14 @@ $("#res").addEventListener("click", e => {
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar) }
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
   else if (el.id === "guardar") alternarGuardado();
+  else if (el.id === "volver") { if (history.state && history.state.q) history.back(); else irAlInicio() }
   else if (el.id === "actualizarTodo") actualizarTodo(el);
 });
 $("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarAjustes(); const q = $("#q").value.trim(); if (q && ultimo) buscar(q); else pintar() });
 $("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); actualizarAjustes(); pintar() });
 $("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarAjustes(); pintar() });
-$("h1").addEventListener("click", () => { $("#q").value = ""; ultimo = null; pintar() });
+$("h1").addEventListener("click", () => { if (history.state && history.state.q) history.back(); else irAlInicio() });
+window.addEventListener("popstate", e => { if (e.state && e.state.q) buscar(e.state.q, true); else irAlInicio() });
 actualizarAjustes(); pintar(); cargarDolar();
 </script>
 </body>
