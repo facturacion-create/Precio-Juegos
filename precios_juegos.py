@@ -91,12 +91,53 @@ def http_json(url, data=None, headers=None):
         return json.loads(r.read().decode("utf-8"))
 
 
+ROMANOS = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+
+
 def normalizar(texto):
     texto = re.sub(r"[™®©]", "", texto or "")  # antes de NFKD, que convierte ™ en "TM"
     texto = unicodedata.normalize("NFKD", texto)
     texto = "".join(c for c in texto if not unicodedata.combining(c)).lower()
     texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    # Números romanos como números, para que 'GTA V' y 'GTA 5' sean lo mismo.
+    texto = " ".join(ROMANOS.get(p, p) for p in texto.split())
     return texto.strip()
+
+
+# Abreviaturas y nombres alternativos comunes -> cómo se buscan en las tiendas.
+ALIAS = {
+    "gta": "grand theft auto", "rdr": "red dead redemption", "rdr2": "red dead redemption 2",
+    "cod": "call of duty", "botw": "zelda breath of the wild", "totk": "zelda tears of the kingdom",
+    "tlou": "the last of us", "gow": "god of war", "nfs": "need for speed", "ff": "final fantasy",
+    "acnh": "animal crossing new horizons", "bg3": "baldur's gate 3", "fh5": "forza horizon 5",
+    "fh4": "forza horizon 4", "mk": "mortal kombat", "mk8": "mario kart 8", "ssbu": "super smash bros ultimate",
+    "smash": "super smash bros", "spiderman": "marvel's spider-man", "spider-man": "marvel's spider-man", "pokemon": "pokémon", "re": "resident evil",
+    "ac": "assassin's creed", "dbz": "dragon ball z", "kh": "kingdom hearts", "mgs": "metal gear solid",
+    "tw3": "the witcher 3", "witcher": "the witcher", "rocket": "rocket league",
+}
+
+
+def expandir_consulta(consulta):
+    """'gta 5' -> 'grand theft auto 5', 're4' -> 'resident evil 4'. Devuelve la
+    consulta tal cual si no hay nada que expandir."""
+    if re.match(r"spider\s+man\b", consulta.strip(), re.I):
+        consulta = "spiderman" + consulta.strip()[len("spider man"):]
+    palabras = consulta.strip().split()
+    ya = set(normalizar(consulta).split())
+    salida = []
+    for i, p in enumerate(palabras):
+        clave_ = re.sub(r"[^a-z0-9]", "", p.lower())
+        m = re.fullmatch(r"([a-z]+)(\d+)", clave_)  # 're4', 'gta5', 'fh5'
+        # No expandir si lo buscado ya trae el nombre completo ("Marvel's Spider-Man").
+        if clave_ in ALIAS and normalizar(ALIAS[clave_]).split()[0] in ya - {clave_}:
+            salida.append(p)
+        elif clave_ in ALIAS and (clave_ not in ("re", "ac", "mk", "ff", "kh") or i == 0):
+            salida.append(ALIAS[clave_])
+        elif m and m.group(1) in ALIAS and clave_ not in ALIAS:
+            salida.append(f"{ALIAS[m.group(1)]} {m.group(2)}")
+        else:
+            salida.append(p)
+    return " ".join(salida)
 
 
 EDICIONES = (
@@ -705,13 +746,16 @@ def detectar_juegos(tiendas):
         salida.append({"clave": g["clave"], "titulo": titulo, "puntaje": g["puntaje"],
                        "n": len(g["tiendas"]), "_pago": g["pago"]})
     # Un juego que está en varias tiendas es más probablemente el que se buscó.
-    salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.1 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
+    salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.2 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
         g.pop("_pago")
     return salida[:6]
 
 
 def buscar_todo(consulta, pais):
+    original = consulta
+    consulta = expandir_consulta(consulta)
+
     def hacer():
         tareas = [
             _pool.submit(_seguro, "Steam", buscar_steam, consulta, pais),
@@ -721,9 +765,9 @@ def buscar_todo(consulta, pais):
         tiendas = []
         for t in tareas:
             tiendas.extend(t.result())
-        return {"consulta": consulta, "pais": pais, "tiendas": tiendas,
+        return {"consulta": original, "buscado": consulta, "pais": pais, "tiendas": tiendas,
                 "juegos": detectar_juegos(tiendas)}
-    resultado = cacheado(("buscar", normalizar(consulta), pais), hacer)
+    resultado = dict(cacheado(("buscar", normalizar(consulta), pais), hacer), consulta=original)
     # No guardar en caché respuestas donde fallaron todas las tiendas.
     if not any(t["ok"] for t in resultado["tiendas"]):
         with _cache_lock:
