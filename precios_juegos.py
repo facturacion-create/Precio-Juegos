@@ -117,6 +117,16 @@ ALIAS = {
 }
 
 
+_A_ROMANO = {v: k.upper() for k, v in ROMANOS.items() if k != "x"}
+
+
+def con_romanos(consulta):
+    """'grand theft auto 6' -> 'grand theft auto VI' (algunas tiendas solo
+    encuentran el juego escrito como en el título). None si no cambia nada."""
+    nueva = " ".join(_A_ROMANO.get(p, p) for p in consulta.split())
+    return nueva if nueva != consulta else None
+
+
 def expandir_consulta(consulta):
     """'gta 5' -> 'grand theft auto 5', 're4' -> 'resident evil 4'. Devuelve la
     consulta tal cual si no hay nada que expandir."""
@@ -382,6 +392,9 @@ def buscar_xbox(consulta, pais):
         lambda: _xbox_ids_storeedge(consulta, pais, locale, "Windows.Desktop"),
         lambda: _xbox_ids_autosuggest(consulta, pais, locale),
     ]
+    romanos = con_romanos(consulta)
+    if romanos:  # 'GTA 6' solo aparece buscando 'Grand Theft Auto VI'
+        busquedas.insert(0, lambda: _xbox_ids_autosuggest(romanos, pais, locale))
     ids, errores = [], []
     # Las búsquedas de Microsoft devuelven cosas distintas: se combinan.
     for futuro in [_pool_sub.submit(b) for b in busquedas]:
