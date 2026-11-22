@@ -16,7 +16,6 @@ import html
 import json
 import os
 import re
-import struct
 import sys
 import threading
 import time
@@ -24,7 +23,6 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-import zlib
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -734,52 +732,34 @@ def buscar_todo(consulta, pais):
 
 
 # --------------------------------------------------------------------------
-# Ícono (PNG generado sin dependencias)
+# Ícono y favicon (archivos en la carpeta static/)
 # --------------------------------------------------------------------------
 
-_SIGNO = [  # signo $ de 5x7
-    "..#..",
-    ".####",
-    "#.#..",
-    ".###.",
-    "..#.#",
-    "####.",
-    "..#..",
-]
-
-
-def generar_icono(tam):
-    fondo, letra = (124, 58, 237), (255, 255, 255)
-    escala = tam // 11
-    ox = (tam - 5 * escala) // 2
-    oy = (tam - 7 * escala) // 2
-    filas = []
-    for y in range(tam):
-        fila = bytearray([0])
-        for x in range(tam):
-            gx, gy = (x - ox) // escala, (y - oy) // escala
-            pinta = 0 <= gx < 5 and 0 <= gy < 7 and x >= ox and y >= oy and _SIGNO[gy][gx] == "#"
-            fila.extend(letra if pinta else fondo)
-        filas.append(bytes(fila))
-    raw = b"".join(filas)
-
-    def chunk(tipo, datos):
-        c = struct.pack(">I", len(datos)) + tipo + datos
-        return c + struct.pack(">I", zlib.crc32(tipo + datos) & 0xFFFFFFFF)
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", tam, tam, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 9))
-            + chunk(b"IEND", b""))
-
-
+CARPETA_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+ICONOS = {  # ruta pedida -> (archivo, tipo)
+    "/favicon.ico": ("icon-32.png", "image/png"),
+    "/favicon.png": ("icon-32.png", "image/png"),
+    "/apple-touch-icon.png": ("icon-180.png", "image/png"),
+    "/apple-touch-icon-precomposed.png": ("icon-180.png", "image/png"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+}
 _iconos = {}
 
 
-def icono(tam):
-    if tam not in _iconos:
-        _iconos[tam] = generar_icono(tam)
-    return _iconos[tam]
+def icono(ruta):
+    """Devuelve (bytes, tipo) del ícono pedido, o None si no existe."""
+    if ruta not in ICONOS:
+        return None
+    archivo, tipo = ICONOS[ruta]
+    if archivo not in _iconos:
+        try:
+            with open(os.path.join(CARPETA_STATIC, archivo), "rb") as f:
+                _iconos[archivo] = f.read()
+        except OSError:
+            return None
+    return _iconos[archivo], tipo
 
 
 MANIFEST = {
@@ -790,8 +770,8 @@ MANIFEST = {
     "background_color": "#0f0f14",
     "theme_color": "#7c3aed",
     "icons": [
-        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
-        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        {"src": "/icon-192.png?v=2", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+        {"src": "/icon-512.png?v=2", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
     ],
 }
 
@@ -807,9 +787,10 @@ HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Precios de Juegos</title>
 <meta name="theme-color" content="#7c3aed">
-<link rel="manifest" href="/manifest.json">
-<link rel="icon" href="/icon-192.png">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json?v=2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=2">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Precios">
 <style>
@@ -1328,10 +1309,9 @@ class Manejador(BaseHTTPRequestHandler):
                 return self._json({"error": describir_error(e)}, 502)
         if ruta == "/manifest.json":
             return self._enviar(200, json.dumps(MANIFEST), "application/manifest+json", "public, max-age=86400")
-        m = re.fullmatch(r"/(?:icon-(192|512)|apple-touch-icon)\.png", ruta)
-        if m or ruta == "/favicon.ico":
-            tam = int(m.group(1)) if m and m.group(1) else 180
-            return self._enviar(200, icono(tam), "image/png", "public, max-age=86400")
+        ic = icono(ruta)
+        if ic:
+            return self._enviar(200, ic[0], ic[1], "public, max-age=604800")
         if ruta == "/healthz":
             return self._enviar(200, "ok", "text/plain")
         self._enviar(404, "No encontrado", "text/plain; charset=utf-8")
