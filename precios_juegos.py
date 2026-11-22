@@ -108,12 +108,28 @@ EDICIONES = (
 )
 
 
+_SEPARADOR = re.compile(r"\s*(?:[:\u2013\u2014]|\s-\s)\s*")
+
+
 def sin_edicion(titulo):
-    """'Hollow Knight: Edición Corazón Vacío' -> 'Hollow Knight'."""
-    partes = re.split(r"\s*(?:[:\u2013\u2014(]|\s-\s)\s*", titulo, maxsplit=1)
-    if len(partes) == 2 and any(e in normalizar(partes[1]) for e in EDICIONES):
-        return partes[0]
-    return titulo
+    """Saca la edición y la plataforma del final, de a una parte por vez:
+    'Hollow Knight: Edición Corazón Vacío' -> 'Hollow Knight'
+    'Clive Barker's Hellraiser: Revival - Deluxe Edition (Switch 2)'
+        -> 'Clive Barker's Hellraiser: Revival'."""
+    t = titulo.strip()
+    while True:
+        antes = t
+        # '(Switch 2)', '(solo PC)', '(PC)' al final
+        m = re.search(r"\s*\(([^()]*)\)\s*$", t)
+        if m and (any(e in normalizar(m.group(1)) for e in EDICIONES) or normalizar(m.group(1)) == "pc"):
+            t = t[:m.start()]
+        # ': Edición X', ' - Deluxe Edition', ' – Nintendo Switch 2 Edition' (la última parte)
+        partes = _SEPARADOR.split(t)
+        if len(partes) > 1 and any(e in normalizar(partes[-1]) for e in EDICIONES):
+            ultimo = list(_SEPARADOR.finditer(t))[-1]
+            t = t[:ultimo.start()]
+        if t == antes or not t:
+            return t or titulo
 
 
 IDIOMAS = ("language", "idioma", "spanish", "english", "german", "french", "italian",
@@ -520,7 +536,8 @@ def detectar_juegos(tiendas):
         titulo = re.sub(r"\s*\((Switch 2|solo PC)\)$", "", titulo)
         salida.append({"clave": g["clave"], "titulo": titulo, "puntaje": g["puntaje"],
                        "n": len(g["tiendas"]), "_pago": g["pago"]})
-    salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"], 1), g["n"], g["puntaje"]), reverse=True)
+    # Un juego que está en varias tiendas es más probablemente el que se buscó.
+    salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.1 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
         g.pop("_pago")
     return salida[:6]
