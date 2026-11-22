@@ -40,7 +40,9 @@ En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". L
 
 ## Notas sobre los precios
 
-- **Steam** en Argentina cobra en dólares (USD). Con "Ver todo en pesos" se convierte con el dólar que elijas. El **dólar tarjeta** ya incluye los impuestos.
-- **Xbox** muestra los precios en pesos que publica Microsoft para Argentina. Al pagar con tarjeta se pueden sumar impuestos.
-- **Nintendo**: Argentina no tiene eShop oficial, así que se muestra el precio de la **eShop de EE.UU.** (en dólares) y, aparte, lo que figura para Argentina (suele estar desactualizado).
+- Para Argentina, todo se muestra **en pesos y con impuestos**, con el desglose: precio de la tienda + IVA + Ingresos Brutos.
+- Desde abril de 2025 los videojuegos digitales **no pagan la percepción del 30%** (RG ARCA 5677). Con tarjeta argentina se paga **IVA 21% + Ingresos Brutos** de tu provincia (2% en CABA y Buenos Aires). Arriba podés cambiar el porcentaje o ver los precios sin impuestos.
+- **Steam** y la **eShop de EE.UU.** cobran en dólares: se pasan a pesos con el **dólar oficial**, que es el que usa la tarjeta. También podés elegir MEP.
+- **Xbox** y la **eShop de Argentina** cobran en pesos: se usa ese precio y se le suman los impuestos.
+- Arriba hay un resumen con **todas las opciones ordenadas de más barata a más cara**. Abajo, cada tienda muestra también los otros resultados parecidos (otras ediciones, secuelas, etc.).
 - Las tiendas no tienen una API oficial para esto. Si alguna cambia, esa tarjeta va a mostrar un error y las demás siguen funcionando.

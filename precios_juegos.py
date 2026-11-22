@@ -43,8 +43,8 @@ PAISES = {
     "ES": {"nombre": "España", "locale": "es-ES"},
 }
 
-# Países donde la eShop local de Nintendo no existe oficialmente o tiene
-# precios viejos: se muestra también la eShop de EE.UU. como referencia.
+# Países donde además de la eShop local se muestra la de EE.UU. como
+# alternativa (mucha gente en Argentina usa una cuenta de EE.UU.).
 NINTENDO_REFERENCIA_US = {"AR"}
 
 # Claves públicas que usa la propia web de Nintendo of America para buscar.
@@ -328,6 +328,8 @@ def _nintendo_buscar(consulta):
         nsuid = h.get("nsuid")
         if not nsuid or h.get("topLevelCategoryCode") not in (None, "GAMES"):
             continue
+        if "upgrade pack" in (h.get("title") or "").lower():
+            continue  # mejoras gratis/pagas para Switch 2, no el juego
         plataforma = "Switch 2" if h.get("platformCode") == "NINTENDO_SWITCH_2" else "Switch"
         titulo = re.sub(r"\s+", " ", h.get("title", "")).strip()
         if plataforma == "Switch 2" and "switch 2" not in titulo.lower():
@@ -367,7 +369,7 @@ def buscar_nintendo(consulta, pais):
     salida = []
     paises = [pais]
     if pais in NINTENDO_REFERENCIA_US:
-        paises = ["US", pais]  # primero EE.UU., que es la que se usa en la práctica
+        paises = [pais, "US"]  # primero la región local, después EE.UU.
     for p in paises:
         try:
             precios = _nintendo_precios(nsuids, p)
@@ -387,9 +389,7 @@ def buscar_nintendo(consulta, pais):
         if len(paises) > 1:
             nombre = "Nintendo eShop " + ("EE.UU." if p == "US" else PAISES[p]["nombre"])
             if p == "US":
-                aviso = "Argentina no tiene eShop oficial: este es el precio de una cuenta de EE.UU."
-            else:
-                aviso = "Precios de la eShop argentina: suelen estar desactualizados y no se pueden usar para comprar."
+                aviso = "Precio para una cuenta de Nintendo de EE.UU. (se cobra en dólares)."
         salida.append(resultado_tienda(
             nombre, items, aviso=aviso,
             buscar_url="https://www.nintendo.com/us/search/#q=" + urllib.parse.quote(consulta),
@@ -401,7 +401,10 @@ def buscar_nintendo(consulta, pais):
 # Cotización del dólar (Argentina)
 # --------------------------------------------------------------------------
 
-TIPOS_DOLAR = {"tarjeta": "Tarjeta (con impuestos)", "oficial": "Oficial", "bolsa": "MEP"}
+# Con tarjeta argentina, las compras en dólares se convierten al dólar oficial.
+# El "dólar tarjeta" (oficial + 30% de Ganancias) NO aplica a videojuegos desde
+# abril de 2025 (RG ARCA 5677), así que no se usa por defecto.
+TIPOS_DOLAR = {"oficial": "Oficial", "bolsa": "MEP", "tarjeta": "Tarjeta (oficial + 30%)"}
 
 
 def cotizacion_dolar():
@@ -542,38 +545,39 @@ HTML = r"""<!doctype html>
 body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;padding-bottom:40px}
 main{max-width:640px;margin:0 auto}
 h1{font-size:1.4rem;margin:4px 0 14px}
+h2{font-size:1rem;margin:18px 0 6px}
 form{display:flex;gap:8px;flex-wrap:wrap}
 input,select,button{font:inherit;border-radius:12px;border:1px solid var(--borde);background:var(--card);color:var(--txt);padding:12px}
 input{flex:1 1 200px;min-width:0}
 button{background:var(--acento);color:#fff;border:none;font-weight:600;cursor:pointer}
-button.sec{background:var(--card);color:var(--txt);border:1px solid var(--borde)}
-.barra{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
-.barra label{display:flex;gap:8px;align-items:center;font-size:.95rem}
-.switch{position:relative;width:46px;height:28px;flex:none}
-.switch input{opacity:0;width:0;height:0;position:absolute}
-.switch span{position:absolute;inset:0;background:var(--borde);border-radius:99px;transition:.2s}
-.switch span:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
-.switch input:checked+span{background:var(--acento)}
-.switch input:checked+span:before{transform:translateX(18px)}
-.cot{font-size:.85rem;color:var(--sub);width:100%}
+.ajustes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0 4px}
+.ajustes label{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--sub)}
+.ajustes select{padding:10px;font-size:.92rem;width:100%}
+@media (max-width:380px){.ajustes{grid-template-columns:1fr}}
+.cot{font-size:.82rem;color:var(--sub);margin-bottom:6px}
 .card{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:14px;margin:10px 0}
 .card.mejor{border:2px solid var(--ok)}
 .tienda{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--sub);display:flex;justify-content:space-between;gap:8px}
-.badge{background:var(--ok);color:#fff;border-radius:99px;padding:1px 8px;font-size:.72rem;letter-spacing:0;text-transform:none}
+.badge{background:var(--ok);color:#fff;border-radius:99px;padding:1px 8px;font-size:.72rem;letter-spacing:0;text-transform:none;white-space:nowrap}
 .titulo{font-weight:600;margin:4px 0}
-.titulo a{color:inherit}
+a{color:inherit}
 .precio{font-size:1.5rem;font-weight:700}
 .tachado{text-decoration:line-through;color:var(--sub);font-size:.95rem;margin-left:6px;font-weight:400}
 .desc{color:var(--ok);font-weight:600;font-size:.9rem;margin-left:6px}
-.orig{color:var(--sub);font-size:.85rem}
-.orig a{color:var(--acento)}
+.det{color:var(--sub);font-size:.82rem}
 .aviso{color:var(--warn);font-size:.82rem;margin-top:6px}
 .error{color:var(--err)}
-details{margin-top:8px;font-size:.9rem}
-summary{cursor:pointer;color:var(--acento)}
-details ul{margin:6px 0 0;padding-left:18px}
-details li{margin:4px 0}
-details a{color:inherit}
+.link{color:var(--acento)}
+.otros{list-style:none;margin:10px 0 0;padding:10px 0 0;border-top:1px solid var(--borde)}
+.otros li{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:.9rem}
+.otros li span:last-child{white-space:nowrap;font-weight:600}
+.otros .det{font-weight:400;display:block}
+.ranking{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:6px 14px;list-style:none;margin:0}
+.ranking li{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--borde)}
+.ranking li:last-child{border-bottom:none}
+.ranking .t{font-size:.78rem;color:var(--sub);display:block}
+.ranking .p{font-weight:700;white-space:nowrap}
+.ranking li:first-child .p{color:var(--ok)}
 .vacio,.cargando{color:var(--sub);text-align:center;padding:24px}
 .pie{color:var(--sub);font-size:.78rem;margin-top:20px}
 </style>
@@ -586,13 +590,25 @@ details a{color:inherit}
   <select id="pais" aria-label="País"></select>
   <button type="submit">Buscar</button>
 </form>
-<div class="barra" id="barraPesos">
-  <label><span class="switch"><input type="checkbox" id="enPesos"><span></span></span> Ver todo en pesos</label>
-  <select id="tipoDolar" aria-label="Tipo de dólar"></select>
+<div id="panelAR">
+  <div class="ajustes">
+    <label>Impuestos
+      <select id="imp">
+        <option value="23">IVA 21% + IIBB 2% (CABA / Bs. As.)</option>
+        <option value="24">IVA 21% + IIBB 3%</option>
+        <option value="26">IVA 21% + IIBB 5%</option>
+        <option value="21">Solo IVA 21%</option>
+        <option value="0">Sin impuestos</option>
+      </select>
+    </label>
+    <label>Dólar para pasar a pesos
+      <select id="tipoDolar"></select>
+    </label>
+  </div>
   <div class="cot" id="cot"></div>
 </div>
 <div id="res"><div class="vacio">Buscá un juego para comparar Steam, Xbox y Nintendo.</div></div>
-<div class="pie">Los precios salen de las APIs públicas de cada tienda y pueden diferir de lo que cobra tu tarjeta (impuestos, percepciones). Confirmá siempre en la tienda.</div>
+<div class="pie" id="pie"></div>
 </main>
 <script>
 const PAISES = __PAISES__;
@@ -603,8 +619,9 @@ let ultimo = null, dolar = null;
 
 for (const [c, p] of Object.entries(PAISES)) $("#pais").add(new Option(p.nombre, c));
 $("#pais").value = leer("pais", "AR");
-$("#enPesos").checked = leer("enPesos", "0") === "1";
+$("#imp").value = leer("imp2", "23");
 
+const esAR = () => $("#pais").value === "AR";
 function fmt(valor, moneda) {
   if (valor === 0) return "Gratis";
   try { return new Intl.NumberFormat("es-AR", {style: "currency", currency: moneda || "USD", maximumFractionDigits: 2}).format(valor) }
@@ -615,72 +632,101 @@ function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;",
 async function cargarDolar() {
   try {
     const r = await fetch("/api/dolar"); dolar = await r.json();
+    if (dolar.error) throw 0;
     const sel = $("#tipoDolar"); sel.innerHTML = "";
-    for (const [k, d] of Object.entries(dolar)) sel.add(new Option(`Dólar ${d.nombre}`, k));
-    sel.value = dolar[leer("tipoDolar", "tarjeta")] ? leer("tipoDolar", "tarjeta") : Object.keys(dolar)[0];
+    for (const [k, d] of Object.entries(dolar)) sel.add(new Option(d.nombre, k));
+    const guardado = leer("tipoDolar2", "oficial");
+    sel.value = dolar[guardado] ? guardado : Object.keys(dolar)[0];
   } catch { dolar = null }
-  actualizarBarra(); pintar();
+  actualizarPanel(); pintar();
 }
 
-function actualizarBarra() {
-  const ar = $("#pais").value === "AR";
-  $("#barraPesos").style.display = ar ? "" : "none";
+function actualizarPanel() {
+  $("#panelAR").style.display = esAR() ? "" : "none";
   const d = dolar && dolar[$("#tipoDolar").value];
-  if (!dolar) $("#cot").textContent = "No se pudo obtener la cotización del dólar.";
+  if (!dolar) $("#cot").textContent = "No se pudo obtener la cotización del dólar: los precios en dólares no se pasan a pesos.";
   else if (d) {
     const f = d.actualizado ? new Date(d.actualizado).toLocaleString("es-AR", {dateStyle: "short", timeStyle: "short"}) : "";
-    $("#cot").textContent = `1 USD = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})`;
+    $("#cot").textContent = `1 US$ = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})`;
   }
-  $("#tipoDolar").disabled = !$("#enPesos").checked;
+  $("#pie").textContent = esAR()
+    ? "Desde abril de 2025 los videojuegos digitales no pagan la percepción del 30% (RG ARCA 5677): con tarjeta argentina se suma IVA 21% más Ingresos Brutos de tu provincia. Algunos bancos o tarjetas pueden cobrar distinto. Los precios salen de las APIs de cada tienda: confirmá en la tienda antes de comprar."
+    : "Los precios salen de las APIs de cada tienda y no incluyen impuestos locales. Confirmá en la tienda antes de comprar.";
 }
 
-function convertir(it) {
-  const enPesos = $("#enPesos").checked && $("#pais").value === "AR";
+// Calcula el precio final en pesos (con impuestos) y su desglose.
+function calcular(it) {
+  const base = {valor: it.precio, original: it.precio_original, moneda: it.moneda, desglose: ""};
+  if (!esAR()) return base;
   const d = dolar && dolar[$("#tipoDolar").value];
-  if (enPesos && d && it.moneda === "USD") {
-    return {valor: it.precio * d.venta, original: it.precio_original ? it.precio_original * d.venta : null, moneda: "ARS", desde: it.precio};
+  let factorMoneda;
+  if (it.moneda === "ARS") factorMoneda = 1;
+  else if (it.moneda === "USD" && d) factorMoneda = d.venta;
+  else return base;
+  const tasa = Number($("#imp").value) / 100;
+  const enPesos = it.precio * factorMoneda;
+  const final = enPesos * (1 + tasa);
+  const partes = [];
+  if (it.moneda === "USD") partes.push(`${fmt(it.precio, "USD")} = ${fmt(enPesos, "ARS")}`);
+  else partes.push(`Precio tienda ${fmt(enPesos, "ARS")}`);
+  if (tasa > 0 && it.precio > 0) {
+    partes.push(`+ IVA ${fmt(enPesos * 0.21, "ARS")}`);
+    if (tasa > 0.21) partes.push(`+ IIBB ${fmt(enPesos * (tasa - 0.21), "ARS")}`);
   }
-  return {valor: it.precio, original: it.precio_original, moneda: it.moneda};
-}
-
-function otros(lista, texto) {
-  if (!lista.length) return "";
-  return `<details><summary>${texto} (${lista.length})</summary><ul>${lista.map(o => {
-    const oc = convertir(o);
-    return `<li><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a> — ${fmt(oc.valor, oc.moneda)}</li>`;
-  }).join("")}</ul></details>`;
+  return {
+    valor: final,
+    original: it.precio_original ? it.precio_original * factorMoneda * (1 + tasa) : null,
+    moneda: "ARS",
+    desglose: it.precio > 0 ? partes.join(" ") : "",
+  };
 }
 
 function pintar() {
   const res = $("#res");
   if (!ultimo) return;
   if (ultimo.error) { res.innerHTML = `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
-  const tarjetas = ultimo.tiendas.map(t => {
-    const it = t.coincide ? t.resultados[0] : null;
-    return {t, it, c: it && convertir(it)};
-  });
-  // Más barato: solo compara tiendas con la misma moneda y precio > 0
-  const comparables = tarjetas.filter(x => x.c && x.c.valor > 0 && !/\(AR\)|Argentina/.test(x.t.tienda));
-  const monedas = new Set(comparables.map(x => x.c.moneda));
-  let mejor = null;
-  if (monedas.size === 1 && comparables.length > 1) mejor = comparables.reduce((a, b) => b.c.valor < a.c.valor ? b : a);
 
-  res.innerHTML = tarjetas.map(x => {
-    const {t, it, c} = x;
+  const tiendas = ultimo.tiendas.map(t => ({
+    t,
+    it: t.coincide ? t.resultados[0] : null,
+    resto: t.coincide ? t.resultados.slice(1) : t.resultados,
+  }));
+  for (const x of tiendas) x.c = x.it && calcular(x.it);
+
+  // Resumen: el mejor resultado de cada tienda, ordenado por precio final.
+  const enRanking = tiendas.filter(x => x.c && x.c.valor > 0);
+  const monedas = new Set(enRanking.map(x => x.c.moneda));
+  let html = "";
+  if (enRanking.length > 1 && monedas.size === 1) {
+    enRanking.sort((a, b) => a.c.valor - b.c.valor);
+    html += `<h2>Todas las opciones${esAR() && $("#imp").value !== "0" ? ", con impuestos" : ""}</h2><ol class="ranking">${
+      enRanking.map(x => `<li><span>${esc(x.t.tienda)}<span class="t">${esc(x.it.titulo)}</span></span><span class="p">${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")
+    }</ol>`;
+  }
+  const mejor = enRanking.length > 1 && monedas.size === 1 ? enRanking[0] : null;
+
+  html += `<h2>Detalle por tienda</h2>` + tiendas.map(x => {
+    const {t, it, c, resto} = x;
     let cuerpo;
     if (!t.ok) cuerpo = `<div class="error">⚠️ ${esc(t.error)}</div>`;
-    else if (!it) cuerpo = `<div class="orig">No se encontró este juego.${t.buscar_url ? ` <a href="${esc(t.buscar_url)}" target="_blank" rel="noopener">Buscar en la tienda</a>` : ""}</div>${otros(t.resultados, "Resultados parecidos")}`;
+    else if (!it) cuerpo = `<div class="det">No se encontró este juego.${t.buscar_url ? ` <a class="link" href="${esc(t.buscar_url)}" target="_blank" rel="noopener">Buscar en la tienda</a>` : ""}</div>`;
     else {
       const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
       cuerpo = `<div class="titulo"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.titulo)}</a></div>
         <div><span class="precio">${fmt(c.valor, c.moneda)}</span>${c.original ? `<span class="tachado">${fmt(c.original, c.moneda)}</span><span class="desc">-${pct}%</span>` : ""}</div>
-        ${c.desde !== undefined ? `<div class="orig">${fmt(c.desde, "USD")} en dólares</div>` : ""}
-        ${otros(t.resultados.slice(1), "¿No es este? Ver otros")}`;
+        ${c.desglose ? `<div class="det">${esc(c.desglose)}</div>` : ""}`;
+    }
+    if (t.ok && resto.length) {
+      cuerpo += `<ul class="otros">${resto.map(o => {
+        const oc = calcular(o);
+        return `<li><span><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>${oc.moneda !== o.moneda ? `<span class="det">${fmt(o.precio, o.moneda)} en la tienda</span>` : ""}</span><span>${fmt(oc.valor, oc.moneda)}</span></li>`;
+      }).join("")}</ul>`;
     }
     return `<div class="card${x === mejor ? " mejor" : ""}">
       <div class="tienda"><span>${esc(t.tienda)}</span>${x === mejor ? '<span class="badge">Más barato</span>' : ""}</div>
       ${cuerpo}${t.aviso ? `<div class="aviso">${esc(t.aviso)}</div>` : ""}</div>`;
   }).join("");
+  res.innerHTML = html;
 }
 
 $("#f").addEventListener("submit", async e => {
@@ -694,9 +740,10 @@ $("#f").addEventListener("submit", async e => {
   } catch { ultimo = {error: "No se pudo conectar con el servidor. Si recién lo abriste, esperá un minuto y probá de nuevo."} }
   pintar();
 });
-$("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarBarra(); if ($("#q").value.trim()) $("#f").requestSubmit() });
-$("#enPesos").addEventListener("change", () => { guardar("enPesos", $("#enPesos").checked ? "1" : "0"); actualizarBarra(); pintar() });
-$("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar", $("#tipoDolar").value); actualizarBarra(); pintar() });
+$("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarPanel(); if ($("#q").value.trim()) $("#f").requestSubmit() });
+$("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); pintar() });
+$("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarPanel(); pintar() });
+actualizarPanel();
 cargarDolar();
 </script>
 </body>
