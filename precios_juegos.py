@@ -46,7 +46,7 @@ PAISES = {
 
 # Países donde además de la eShop local se muestra la de EE.UU. como
 # alternativa (mucha gente en Argentina usa una cuenta de EE.UU.).
-NINTENDO_REFERENCIA_US = {"AR"}
+NINTENDO_REFERENCIA_US = set()  # vacío: en Argentina se muestra solo la eShop local
 
 # Claves públicas que usa la propia web de Nintendo of America para buscar.
 ALGOLIA_APP = "U3B6GR4UA3"
@@ -901,10 +901,10 @@ function actualizarAjustes() {
   else if (d) {
     const f = d.actualizado ? new Date(d.actualizado).toLocaleString("es-AR", {dateStyle: "short", timeStyle: "short"}) : "";
     $("#cot").textContent = `1 US$ = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})` +
-      (dolar.cripto ? ` · Tarjeta Global ≈ ${fmt(dolar.cripto.venta, "ARS")} (dólar cripto)` : "");
+      "";
   }
   $("#pie").textContent = ar
-    ? "Precios finales con tarjeta argentina: precio de la tienda + IVA 21% + Ingresos Brutos (los juegos no pagan la percepción de Ganancias desde abril de 2025). Steam, Xbox y la eShop argentina no aceptan tarjeta Global; la eShop de EE.UU. sí, y con ella no se paga IVA ni IIBB. Confirmá siempre en la tienda antes de comprar."
+    ? "Precios finales con tarjeta argentina: precio de la tienda + IVA 21% + Ingresos Brutos (los juegos no pagan la percepción de Ganancias desde abril de 2025). Confirmá siempre en la tienda antes de comprar."
     : "Precios de las APIs de cada tienda, sin impuestos locales. Confirmá en la tienda antes de comprar.";
 }
 
