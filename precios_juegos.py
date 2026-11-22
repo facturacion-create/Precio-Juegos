@@ -762,7 +762,7 @@ def detectar_juegos(tiendas):
     salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.2 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
         g.pop("_pago")
-    return salida[:6]
+    return salida[:12]
 
 
 BUSCADORES = {"Steam": buscar_steam, "Xbox": buscar_xbox, "Nintendo eShop": buscar_nintendo}
@@ -810,13 +810,13 @@ def buscar_todo(consulta, pais):
                 siguiente = _A_ROMANO.get(str(max(numeros) + 1))
                 extra += [(n, f"{consulta} {siguiente}") for n in BUSCADORES]
         # 2) Juegos encontrados en una tienda pero no en otra: buscarlos ahí por su nombre exacto.
-        for g in detectar_juegos(tiendas)[:3]:
+        for g in detectar_juegos(tiendas)[:6]:
             for t in tiendas:
                 if t["ok"] and not any(r.get("clave") == g["clave"] for r in t["resultados"]):
                     nombre = next((n for n in BUSCADORES if t["tienda"].startswith(n)), None)
                     if nombre:
                         extra.append((nombre, g["titulo"]))
-        extra = list(dict.fromkeys(extra))[:12]
+        extra = list(dict.fromkeys(extra))[:18]
         if extra:
             for nuevas in _pool.map(lambda e: _seguro(e[0], BUSCADORES[e[0]], e[1], pais), extra):
                 fusionar(tiendas, nuevas, consulta)
@@ -919,6 +919,17 @@ details>summary::-webkit-details-marker{display:none}
 .grilla select{padding:10px;font-size:.92rem;width:100%}
 .cot{font-size:.8rem;margin-top:8px}
 /* Resultado */
+.jcard{background:var(--card);border:1px solid var(--borde);border-radius:16px;margin:8px 0;overflow:hidden}
+.jcard>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 14px}
+.jcard>summary::after{content:"›";color:var(--sub);font-size:1.3rem;transition:transform .15s}
+.jcard[open]>summary::after{transform:rotate(90deg)}
+.jcard[open]>summary{border-bottom:1px solid var(--borde)}
+.jtit{flex:1;min-width:0;font-weight:700}
+.jprecio{font-weight:700;white-space:nowrap;text-align:right}
+.jprecio small{display:block;font-size:.72rem;font-weight:600;color:var(--sub)}
+.jbody{padding:10px 12px 12px}
+.jbody .lista{border-radius:12px}
+.jacciones{display:flex;justify-content:flex-end;margin-bottom:8px}
 .volver{background:none;color:var(--acento);border:none;padding:6px 0;margin-top:14px;font-weight:600;font-size:.95rem}
 .juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:6px}
 .juego h3{font-size:1.5rem;line-height:1.2;margin:0}
@@ -1160,11 +1171,11 @@ function actualizarEnBiblioteca(datos, clave) {
   guardarBiblioteca(b);
 }
 
-function alternarGuardado() {
-  const g = ultimo.juegos.find(g => g.clave === juegoSel);
+function alternarGuardado(clave) {
+  const g = ultimo.juegos.find(g => g.clave === clave);
   let b = biblioteca();
-  if (enBiblioteca(juegoSel)) b = b.filter(j => !(j.clave === juegoSel && j.pais === $("#pais").value));
-  else b.unshift({clave: juegoSel, titulo: g.titulo, pais: $("#pais").value, mejor: mejorOpcion(ultimo, juegoSel), fecha: Date.now()});
+  if (enBiblioteca(clave)) b = b.filter(j => !(j.clave === clave && j.pais === $("#pais").value));
+  else b.unshift({clave, titulo: g.titulo, pais: $("#pais").value, mejor: mejorOpcion(ultimo, clave), oferta: mejorOferta(ultimo, clave), fecha: Date.now()});
   guardarBiblioteca(b); pintar();
 }
 
@@ -1215,7 +1226,7 @@ function pintarBiblioteca() {
     }
     const f = new Date(j.fecha).toLocaleDateString("es-AR", {day: "numeric", month: "short"});
     return `<div class="bib-item">
-      <div class="info" data-buscar="${esc(j.titulo)}" data-pais="${esc(j.pais)}"><div class="nom">${esc(j.titulo)}</div>
+      <div class="info" data-buscar="${esc(j.titulo)}" data-clave="${esc(j.clave)}" data-pais="${esc(j.pais)}"><div class="nom">${esc(j.titulo)}</div>
         <div class="sub">${j.oferta ? `<span class="enoferta">🔥 -${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span>` : j.mejor ? `Más barato en ${esc(j.mejor.tienda)}` : "Sin precio"} · ${f}${j.pais !== "AR" ? " · " + esc(PAISES[j.pais]?.nombre || j.pais) : ""}</div></div>
       <div class="p">${j.mejor ? fmt(j.mejor.valor, j.mejor.moneda) : "—"}${cambio}</div>
       <button class="x" data-borrar="${i}" aria-label="Quitar">✕</button></div>`;
@@ -1251,7 +1262,7 @@ function pintarAlertas() {
   const enOferta = biblioteca().filter(j => j.oferta && j.pais === $("#pais").value);
   if (!enOferta.length) return "";
   return `<div class="alerta"><b>🔥 ${enOferta.length === 1 ? "Un juego de tu lista está" : enOferta.length + " juegos de tu lista están"} en oferta</b>${enOferta.map(j =>
-    `<div class="alerta-item" data-buscar="${esc(j.titulo)}" data-pais="${esc(j.pais)}"><span>${esc(j.titulo)}${j.oferta.nueva ? ' <span class="nuevo">NUEVO</span>' : ""}<span class="t">-${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span></span><span class="p">${fmt(j.oferta.valor, j.oferta.moneda)}</span></div>`).join("")}</div>`;
+    `<div class="alerta-item" data-buscar="${esc(j.titulo)}" data-clave="${esc(j.clave)}" data-pais="${esc(j.pais)}"><span>${esc(j.titulo)}${j.oferta.nueva ? ' <span class="nuevo">NUEVO</span>' : ""}<span class="t">-${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span></span><span class="p">${fmt(j.oferta.valor, j.oferta.moneda)}</span></div>`).join("")}</div>`;
 }
 
 // Cuando abrís un juego en oferta, deja de marcarse como "NUEVO".
@@ -1261,6 +1272,37 @@ function marcarVista(clave) {
 }
 
 /* ---------- Pantalla ---------- */
+// Detalle de un juego: lo que pagarías en cada tienda, dónde no está y sus DLC.
+function pintarDetalle(g) {
+  const {filas, faltan, comparables} = opciones(ultimo, g.clave);
+  const mejor = comparables && filas.length > 1 && filas[0].c.valor > 0 ? filas[0] : null;
+  let html = filas.length ? `<div class="lista">${filas.map(f => {
+    const {it, c, otras} = f;
+    const nota = it.titulo.toLowerCase() !== g.titulo.toLowerCase() ? it.titulo : "";
+    const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
+    const det = [`<p><a class="link" href="${esc(it.url)}" target="_blank" rel="noopener">Ver en la tienda ↗</a></p>`];
+    if (c.original) det.push(`<p>En oferta: antes <span class="tachado">${fmt(c.original, c.moneda)}</span></p>`);
+    if (c.partes.length) det.push(`<p>${c.partes.map(esc).join("<br>")}</p>`);
+    if (otras.length) det.push(`<p>Otras ediciones en esta tienda:</p><ul>${otras.map(o => `<li><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>: ${fmt(calcular(o).valor, calcular(o).moneda)}</li>`).join("")}</ul>`);
+    if (f.t.aviso) det.push(`<p class="warn">${esc(f.t.aviso)}</p>`);
+    return `<details class="fila${f === mejor ? " mejor" : ""}"><summary>
+      <span><span class="tienda">${esc(f.nombre)}</span>${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
+      <span class="precio">${fmt(c.valor, c.moneda)}${f === mejor || pct ? `<small>${[f === mejor ? "Más barato" : "", pct ? `-${pct}%` : ""].filter(Boolean).join(" · ")}</small>` : ""}</span>
+    </summary><div class="det">${det.join("")}</div></details>`;
+  }).join("")}</div>` : "";
+  if (faltan.length) html += `<div class="falta">No está en: ${faltan.map(t => t.buscar_url
+    ? `<a href="${esc(t.buscar_url)}" target="_blank" rel="noopener">${esc(t.tienda)}</a>` : esc(t.tienda)).join(", ")}${faltan.some(t => !t.ok) ? " (alguna tienda no respondió)" : ""}</div>`;
+  const extras = [];
+  for (const t of ultimo.tiendas) for (const r of t.resultados)
+    if (r.tipo === "extra" && r.clave.startsWith(g.clave)) extras.push({t, r, c: calcular(r)});
+  if (extras.length) html += `<details class="extras"><summary>DLC y extras (${extras.length})</summary><ul>${extras.map(x =>
+    `<li><span><a href="${esc(x.r.url)}" target="_blank" rel="noopener">${esc(x.r.titulo)}</a><span class="t">${esc(x.t.tienda)}</span></span><span>${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")}</ul></details>`;
+  return html;
+}
+
+const botonGuardar = clave => `<button class="sec guardar" data-guardar="${esc(clave)}">${enBiblioteca(clave) ? "★ Guardado" : "☆ Guardar"}</button>`;
+let abiertos = new Set();  // juegos desplegados en la lista de resultados
+
 function pintar() {
   const res = $("#res");
   if (!ultimo) { res.innerHTML = pintarInicio(); return }
@@ -1271,76 +1313,57 @@ function pintar() {
     res.innerHTML = volver + `<div class="vacio">No encontré "${esc(ultimo.consulta)}" en ninguna tienda.<br>Probá con menos palabras o con el nombre en inglés.</div>`;
     return;
   }
-  if (!ultimo.juegos.some(g => g.clave === juegoSel)) juegoSel = ultimo.juegos[0].clave;
-  const g = ultimo.juegos.find(g => g.clave === juegoSel);
-  const {filas, faltan, comparables} = opciones(ultimo, juegoSel);
   const conImp = esAR() && $("#imp").value !== "0";
-  const mejor = comparables && filas.length > 1 && filas[0].c.valor > 0 ? filas[0] : null;
-  const guardado = enBiblioteca(juegoSel);
-
-  let html = `<button class="volver" id="volver">← Volver</button><div class="juego"><h3>${esc(g.titulo)}</h3>
-    <button class="sec guardar" id="guardar">${guardado ? "★ Guardado" : "☆ Guardar"}</button></div>`;
-  const otros = ultimo.juegos.filter(x => x.clave !== juegoSel);
-  if (otros.length) html += `<div class="chips">¿Buscabas otro? ${otros.map(x => `<button class="chip" data-juego="${esc(x.clave)}">${esc(x.titulo)}</button>`).join("")}</div>`;
-
-  html += `<h2>Lo que pagarías${conImp ? " (con impuestos)" : ""}</h2><div class="lista">${filas.map(f => {
-    const {it, c, otras} = f;
-    const nota = f.global ? "Sin IVA ni IIBB" : (it.titulo.toLowerCase() !== g.titulo.toLowerCase() ? it.titulo : "");
-    const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
-    const det = [];
-    if (!f.global) det.push(`<p><a class="link" href="${esc(it.url)}" target="_blank" rel="noopener">Ver en la tienda ↗</a></p>`);
-    if (c.original) det.push(`<p>En oferta: antes <span class="tachado">${fmt(c.original, c.moneda)}</span></p>`);
-    if (c.partes.length) det.push(`<p>${c.partes.map(esc).join("<br>")}</p>`);
-    if (otras.length) det.push(`<p>Otras ediciones en esta tienda:</p><ul>${otras.map(o => `<li><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>: ${fmt(calcular(o).valor, calcular(o).moneda)}</li>`).join("")}</ul>`);
-    if (f.t.aviso && !f.global) det.push(`<p class="warn">${esc(f.t.aviso)}</p>`);
-    if (f.global) det.push(`<p class="warn">Necesitás una cuenta de Nintendo de EE.UU. y una tarjeta emitida afuera (AstroPay Global, Lemon Global, etc.). La cotización real depende de la billetera.</p>`);
-    return `<details class="fila${f === mejor ? " mejor" : ""}"><summary>
-      <span><span class="tienda">${esc(f.nombre)}</span>${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
-      <span class="precio">${fmt(c.valor, c.moneda)}${f === mejor || pct ? `<small>${[f === mejor ? "Más barato" : "", pct ? `-${pct}%` : ""].filter(Boolean).join(" · ")}</small>` : ""}</span>
-    </summary><div class="det">${det.join("")}</div></details>`;
-  }).join("")}</div>`;
-
-  if (faltan.length) html += `<div class="falta">No está en: ${faltan.map(t => t.buscar_url
-    ? `<a href="${esc(t.buscar_url)}" target="_blank" rel="noopener">${esc(t.tienda)}</a>` : esc(t.tienda)).join(", ")}${faltan.some(t => !t.ok) ? " (alguna tienda no respondió)" : ""}</div>`;
-
-  // DLC y extras de este juego
-  const extras = [];
-  for (const t of ultimo.tiendas) for (const r of t.resultados)
-    if (r.tipo === "extra" && r.clave.startsWith(juegoSel)) extras.push({t, r, c: calcular(r)});
-  if (extras.length) html += `<details class="extras"><summary>DLC y extras (${extras.length})</summary><ul>${extras.map(x =>
-    `<li><span><a href="${esc(x.r.url)}" target="_blank" rel="noopener">${esc(x.r.titulo)}</a><span class="t">${esc(x.t.tienda)}</span></span><span>${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")}</ul></details>`;
-
+  let html = volver;
+  if (ultimo.juegos.length === 1) {
+    const g = ultimo.juegos[0];
+    html += `<div class="juego"><h3>${esc(g.titulo)}</h3>${botonGuardar(g.clave)}</div>
+      <h2>Lo que pagarías${conImp ? " (con impuestos)" : ""}</h2>${pintarDetalle(g)}`;
+  } else {
+    // Varios juegos (una saga, nombres parecidos): todos a la vista con su precio más barato.
+    if (!abiertos.size) abiertos.add(ultimo.juegos[0].clave);
+    html += `<h2>Encontré ${ultimo.juegos.length} juegos${conImp ? " · precios con impuestos" : ""}</h2>` + ultimo.juegos.map(g => {
+      const m = mejorOpcion(ultimo, g.clave), o = mejorOferta(ultimo, g.clave);
+      const precio = m ? `<span class="jprecio">${fmt(m.valor, m.moneda)}<small>${o && o.tienda === m.tienda ? `-${o.pct}% · ` : ""}${esc(m.tienda)}</small></span>` : `<span class="jprecio"><small>sin precio</small></span>`;
+      return `<details class="jcard" data-clave="${esc(g.clave)}"${abiertos.has(g.clave) ? " open" : ""}>
+        <summary><span class="jtit">${esc(g.titulo)}${enBiblioteca(g.clave) ? " ★" : ""}</span>${precio}</summary>
+        <div class="jbody"><div class="jacciones">${botonGuardar(g.clave)}</div>${pintarDetalle(g)}</div></details>`;
+    }).join("");
+  }
   res.innerHTML = html;
-  if (guardado) { actualizarEnBiblioteca(ultimo, juegoSel); marcarVista(juegoSel) }
+  for (const g of ultimo.juegos) if (enBiblioteca(g.clave)) { actualizarEnBiblioteca(ultimo, g.clave); marcarVista(g.clave) }
 }
 
 /* ---------- Eventos ---------- */
 function irAlInicio() { $("#q").value = ""; ultimo = null; pintar(); window.scrollTo({top: 0}) }
 
-async function buscar(q, desdeHistorial) {
+async function buscar(q, desdeHistorial, abrir) {
   // Guardar en el historial, así el gesto/botón "atrás" del celular vuelve al inicio.
   if (!desdeHistorial) { try { history.pushState({q}, "", "#" + encodeURIComponent(q)) } catch {} }
   $("#q").value = q; $("#q").blur();
-  ultimo = {cargando: true}; juegoSel = null; pintar();
+  ultimo = {cargando: true}; abiertos = new Set(abrir ? [abrir] : []); pintar();
   try {
     const r = await fetch(`/api/buscar?q=${encodeURIComponent(q)}&pais=${$("#pais").value}`);
     ultimo = await r.json();
   } catch { ultimo = {error: "No se pudo conectar con el servidor. Si recién lo abriste, esperá un minuto y probá de nuevo."} }
   pintar();
 }
+$("#res").addEventListener("toggle", e => {
+  const c = e.target.closest && e.target.closest(".jcard");
+  if (c && e.target === c) c.open ? abiertos.add(c.dataset.clave) : abiertos.delete(c.dataset.clave);
+}, true);
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#guardar,#actualizarTodo,#masOfertas,#volver");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#actualizarTodo,#masOfertas,#volver");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
   else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
   else if (el.id === "masOfertas") { mostrarOfertas += 40; pintar() }
-  else if (el.dataset.juego) { juegoSel = el.dataset.juego; pintar(); window.scrollTo({top: 0, behavior: "smooth"}) }
-  else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar) }
+  else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar, false, el.dataset.clave) }
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
-  else if (el.id === "guardar") alternarGuardado();
+  else if (el.dataset.guardar) alternarGuardado(el.dataset.guardar);
   else if (el.id === "volver") { if (history.state && history.state.q) history.back(); else irAlInicio() }
   else if (el.id === "actualizarTodo") actualizarTodo();
 });

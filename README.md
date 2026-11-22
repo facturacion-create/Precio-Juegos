@@ -42,7 +42,7 @@ En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". L
 
 - Escribí el juego y tocá **Buscar**. Arriba aparece **el juego** y abajo **lo que pagarías en cada tienda**, del más barato al más caro.
 - Tocá una tienda para ver el detalle: link a la tienda, desglose de impuestos y otras ediciones.
-- Si no era ese juego, tocá otro en **"¿Buscabas otro?"**.
+- Si la búsqueda coincide con varios juegos (por ejemplo "resident evil" o "gta"), aparecen **todos en una lista** con su precio más barato. Tocá uno para ver el detalle por tienda.
 - Los DLC y extras están aparte, en **"DLC y extras"**.
 - Tocá **☆ Guardar** para sumar el juego a **Mis juegos** (en la pantalla principal). Con **↻ Actualizar precios** ves si subió o bajó. La lista se guarda en el celular.
 - **Alertas de ofertas:** cada vez que abrís la app, revisa solos los juegos de **Mis juegos**. Si alguno está en oferta en cualquier tienda, aparece arriba un aviso verde (con **NUEVO** si la oferta no estaba la vez anterior).
