@@ -38,6 +38,15 @@ Cada vez que se sube un cambio a esa rama en GitHub, Render lo vuelve a publicar
 
 En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". La primera vez que la abras después de eso puede tardar **30 a 60 segundos** en cargar. Después anda rápido.
 
+## Cómo se usa
+
+- Escribí el juego y tocá **Buscar**. Arriba aparece **el juego** y abajo **lo que pagarías en cada tienda**, del más barato al más caro.
+- Tocá una tienda para ver el detalle: link a la tienda, desglose de impuestos y otras ediciones.
+- Si no era ese juego, tocá otro en **"¿Buscabas otro?"**.
+- Los DLC y extras están aparte, en **"DLC y extras"**.
+- Tocá **☆ Guardar** para sumar el juego a **Mis juegos** (en la pantalla principal). Con **↻ Actualizar precios** ves si subió o bajó. La lista se guarda en el celular.
+- En **⚙️ Ajustes** cambiás los impuestos (según tu provincia), cómo pagás los dólares y el país.
+
 ## Notas sobre los precios
 
 - Para Argentina, todo se muestra **en pesos y con impuestos**, con el desglose: precio de la tienda + IVA + Ingresos Brutos.

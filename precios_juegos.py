@@ -93,9 +93,9 @@ def http_json(url, data=None, headers=None):
 
 
 def normalizar(texto):
-    texto = unicodedata.normalize("NFKD", texto or "")
-    texto = "".join(c for c in texto if not unicodedata.combining(c))
-    texto = re.sub(r"[™®©]", "", texto.lower())
+    texto = re.sub(r"[™®©]", "", texto or "")  # antes de NFKD, que convierte ™ en "TM"
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c)).lower()
     texto = re.sub(r"[^a-z0-9]+", " ", texto)
     return texto.strip()
 
@@ -116,26 +116,57 @@ def sin_edicion(titulo):
     return titulo
 
 
-def puntaje(consulta, titulo):
-    """Qué tan parecido es un título a lo que se buscó (más alto = mejor)."""
-    q, t = normalizar(consulta), normalizar(sin_edicion(titulo))
+IDIOMAS = ("language", "idioma", "spanish", "english", "german", "french", "italian",
+           "portuguese", "japanese", "korean", "chinese", "russian", "polish")
+
+
+def clave(titulo):
+    """Nombre base del juego, sin edición ni plataforma.
+    'Red Dead Redemption 2: Edición Definitiva' -> 'red dead redemption 2'."""
+    t = normalizar(sin_edicion(titulo))
+    t = re.sub(r"^(edicion \w+|version) de ", "", t)  # 'Edición definitiva de X', 'Versión de X'
+    t = re.sub(r"\s+para xbox (one|series x s|series)$", "", t)
+    t = re.sub(r"(\s+(para|for) (windows|pc|xbox)\b.*)$", "", t)
+    t = re.sub(r"(\s+\w+)?\s+(edition|edicion)$", "", t)  # 'X Tarnished Edition'
+    t = re.sub(r"\s+edicion \w+$", "", t)  # 'X Edición Deluxe'
+    return t.strip() or normalizar(titulo)
+
+
+def es_extra_por_nombre(titulo):
+    t = " " + normalizar(titulo) + " "
+    return any(f" {p} " in t for p in PALABRAS_EXTRA + IDIOMAS)
+
+
+def puntaje(consulta, item):
+    """Qué tan parecido es un resultado a lo que se buscó (más alto = mejor)."""
+    q, t = normalizar(consulta), item["clave"]
     if not q or not t:
         return 0.0
     s = SequenceMatcher(None, q, t).ratio()
     if t == q:
         s += 1.0
-    elif t.startswith(q + " ") or t.startswith(q):
-        s += 0.3
+    elif set(q.split()) <= set(t.split()):  # 'silksong' en 'hollow knight silksong'
+        s += 0.55 + (0.1 if t.startswith(q) else 0)
     elif q in t:
         s += 0.15
-    if any(p in t and p not in q for p in PALABRAS_EXTRA):
-        s -= 0.5
+    if item["tipo"] == "extra":
+        s -= 0.6
+    elif item["tipo"] == "edicion":
+        s -= 0.02  # a igual nombre, primero el juego base
     return round(s, 3)
 
 
-def ordenar(consulta, items):
+def preparar(consulta, items, tipo_origen=None):
+    """Completa clave, tipo y puntaje de cada resultado y los ordena."""
     for it in items:
-        it["puntaje"] = puntaje(consulta, it["titulo"])
+        it["clave"] = clave(it["titulo"])
+        tipo = it.pop("_tipo", None) or "juego"
+        if tipo != "extra" and es_extra_por_nombre(it["titulo"]):
+            tipo = "extra"
+        if tipo == "juego" and it["clave"] != normalizar(it["titulo"]):
+            tipo = "edicion"
+        it["tipo"] = tipo
+        it["puntaje"] = puntaje(consulta, it)
     items.sort(key=lambda it: it["puntaje"], reverse=True)
     return items
 
@@ -172,6 +203,18 @@ def describir_error(e):
 # Steam
 # --------------------------------------------------------------------------
 
+def _steam_tipo(appid):
+    """'game', 'dlc', 'music', 'demo'... (o None si no se pudo saber)."""
+    def traer():
+        try:
+            d = http_json(f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=basic")
+            info = d.get(str(appid)) or {}
+            return (info.get("data") or {}).get("type") if info.get("success") else None
+        except Exception:
+            return None
+    return cacheado(("steam_tipo", appid), traer, ttl=7 * 24 * 3600)
+
+
 def buscar_steam(consulta, pais):
     url = "https://store.steampowered.com/api/storesearch/?" + urllib.parse.urlencode(
         {"term": consulta, "cc": pais, "l": "spanish"}
@@ -181,6 +224,8 @@ def buscar_steam(consulta, pais):
     for it in datos.get("items", []):
         if it.get("type") != "app":
             continue
+        if re.search(r"hentai|\b18\+|nsfw|uncensored", (it.get("name") or "").lower()):
+            continue  # contenido adulto que aparece al buscar palabras comunes
         precio = it.get("price")
         if precio:
             final = precio.get("final", 0) / 100
@@ -197,9 +242,16 @@ def buscar_steam(consulta, pais):
             "gratis": not precio,
             "url": f"https://store.steampowered.com/app/{it.get('id')}/",
             "imagen": it.get("tiny_image"),
+            "_id": it.get("id"),
         })
+    # Steam no dice en la búsqueda si algo es juego o DLC: se consulta aparte.
+    tipos = list(_pool_sub.map(lambda it: _steam_tipo(it["_id"]), items))
+    for it, tipo in zip(items, tipos):
+        it.pop("_id", None)
+        if tipo and tipo != "game":
+            it["_tipo"] = "extra"  # dlc, music (soundtrack), demo, etc.
     return resultado_tienda(
-        "Steam", ordenar(consulta, items)[:5],
+        "Steam", preparar(consulta, items)[:10],
         buscar_url="https://store.steampowered.com/search/?term=" + urllib.parse.quote(consulta),
     )
 
@@ -269,7 +321,7 @@ def buscar_xbox(consulta, pais):
     ]
     ids, errores = [], []
     # Las búsquedas de Microsoft devuelven cosas distintas: se combinan.
-    for futuro in [_pool_xbox.submit(b) for b in busquedas]:
+    for futuro in [_pool_sub.submit(b) for b in busquedas]:
         try:
             for i in futuro.result():
                 if i not in ids:
@@ -304,10 +356,10 @@ def buscar_xbox(consulta, pais):
             "gratis": lista == 0,
             "url": f"https://www.xbox.com/{locale}/games/store/x/{prod['ProductId']}",
         })
-    items = ordenar(consulta, items)
+    items = preparar(consulta, items)
     # A igual parecido, preferir los que se juegan en consola.
     items.sort(key=lambda it: (it["puntaje"] - (0.05 if "(solo PC)" in it["titulo"] else 0)), reverse=True)
-    return resultado_tienda("Xbox", items[:5], buscar_url=buscar_url)
+    return resultado_tienda("Xbox", items[:10], buscar_url=buscar_url)
 
 
 # --------------------------------------------------------------------------
@@ -321,25 +373,27 @@ def _nintendo_buscar(consulta):
         data={"requests": [{
             "indexName": "store_game_en_us",
             "query": consulta,
-            "params": "hitsPerPage=10",
+            "params": "hitsPerPage=15",
         }]},
         headers={"x-algolia-application-id": ALGOLIA_APP, "x-algolia-api-key": ALGOLIA_KEY},
     )
     juegos = []
     for h in datos["results"][0].get("hits", []):
-        nsuid = h.get("nsuid")
-        if not nsuid or h.get("topLevelCategoryCode") not in (None, "GAMES"):
-            continue
+        nsuid = str(h.get("nsuid") or "")
+        if not nsuid.isdigit() or h.get("topLevelCategoryCode") not in (None, "GAMES"):
+            continue  # sin precio en la eShop (p. ej. juegos de celular)
         if "upgrade pack" in (h.get("title") or "").lower():
             continue  # mejoras gratis/pagas para Switch 2, no el juego
         plataforma = "Switch 2" if h.get("platformCode") == "NINTENDO_SWITCH_2" else "Switch"
         titulo = re.sub(r"\s+", " ", h.get("title", "")).strip()
         if plataforma == "Switch 2" and "switch 2" not in titulo.lower():
             titulo += " (Switch 2)"
+        dlc = h.get("dlcType")  # None = juego, 'ROM Bundle' = edición completa, otro = DLC
         juegos.append({
-            "nsuid": str(nsuid),
+            "nsuid": nsuid,
             "titulo": titulo,
             "url": "https://www.nintendo.com" + (h.get("url") or ""),
+            "_tipo": "extra" if dlc and dlc != "ROM Bundle" else None,
         })
     return juegos
 
@@ -363,7 +417,7 @@ def _nintendo_precios(nsuids, pais):
 
 
 def buscar_nintendo(consulta, pais):
-    juegos = ordenar(consulta, _nintendo_buscar(consulta))[:6]
+    juegos = preparar(consulta, _nintendo_buscar(consulta))[:12]
     if not juegos:
         return [resultado_tienda("Nintendo eShop")]
     nsuids = [j["nsuid"] for j in juegos]
@@ -384,6 +438,7 @@ def buscar_nintendo(consulta, pais):
                 pr = precios[j["nsuid"]]
                 items.append({
                     "titulo": j["titulo"], "url": j["url"], "puntaje": j["puntaje"],
+                    "clave": j["clave"], "tipo": j["tipo"],
                     "gratis": pr["precio"] == 0, **pr,
                 })
         nombre = "Nintendo eShop"
@@ -433,7 +488,7 @@ def cotizacion_dolar():
 # --------------------------------------------------------------------------
 
 _pool = ThreadPoolExecutor(max_workers=12)
-_pool_xbox = ThreadPoolExecutor(max_workers=12)  # separado para evitar bloqueos
+_pool_sub = ThreadPoolExecutor(max_workers=16)  # separado para evitar bloqueos
 
 
 def _seguro(nombre, funcion, *args):
@@ -443,6 +498,32 @@ def _seguro(nombre, funcion, *args):
     except Exception as e:
         print(f"[{nombre}] {type(e).__name__}: {e}", file=sys.stderr)
         return [resultado_tienda(nombre, error=describir_error(e))]
+
+
+def detectar_juegos(tiendas):
+    """Agrupa los resultados de todas las tiendas por juego (clave) y devuelve
+    los candidatos ordenados: el primero es el que probablemente se buscó."""
+    grupos = {}
+    for t in tiendas:
+        for it in t["resultados"]:
+            if it.get("tipo") == "extra" or it["puntaje"] < PUNTAJE_MINIMO:
+                continue
+            g = grupos.setdefault(it["clave"], {"clave": it["clave"], "puntaje": 0, "tiendas": set(), "titulos": [], "pago": False})
+            g["puntaje"] = max(g["puntaje"], it["puntaje"])
+            g["pago"] = g["pago"] or it["precio"] > 0
+            g["tiendas"].add(t["tienda"])
+            g["titulos"].append((it["tipo"] != "juego", len(it["titulo"]), it["titulo"]))
+    salida = []
+    for g in grupos.values():
+        # Nombre para mostrar: el del juego base más corto (sin edición ni plataforma).
+        titulo = min(g["titulos"])[2]
+        titulo = re.sub(r"\s*\((Switch 2|solo PC)\)$", "", titulo)
+        salida.append({"clave": g["clave"], "titulo": titulo, "puntaje": g["puntaje"],
+                       "n": len(g["tiendas"]), "_pago": g["pago"]})
+    salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"], 1), g["n"], g["puntaje"]), reverse=True)
+    for g in salida:
+        g.pop("_pago")
+    return salida[:6]
 
 
 def buscar_todo(consulta, pais):
@@ -455,7 +536,8 @@ def buscar_todo(consulta, pais):
         tiendas = []
         for t in tareas:
             tiendas.extend(t.result())
-        return {"consulta": consulta, "pais": pais, "tiendas": tiendas}
+        return {"consulta": consulta, "pais": pais, "tiendas": tiendas,
+                "juegos": detectar_juegos(tiendas)}
     resultado = cacheado(("buscar", normalizar(consulta), pais), hacer)
     # No guardar en caché respuestas donde fallaron todas las tiendas.
     if not any(t["ok"] for t in resultado["tiendas"]):
@@ -544,61 +626,94 @@ HTML = r"""<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Precios">
 <style>
-:root{--bg:#f4f4f7;--card:#fff;--txt:#17171c;--sub:#6b6b78;--borde:#e3e3ea;--acento:#7c3aed;--ok:#0f9d58;--warn:#b45309;--err:#c62828}
-@media (prefers-color-scheme: dark){:root{--bg:#0f0f14;--card:#1a1a22;--txt:#ececf1;--sub:#9a9aa8;--borde:#2c2c38;--acento:#a78bfa;--ok:#34d399;--warn:#fbbf24;--err:#f87171}}
+:root{--bg:#f4f4f7;--card:#fff;--txt:#17171c;--sub:#6b6b78;--borde:#e3e3ea;--acento:#7c3aed;--ok:#0f9d58;--okbg:#e7f6ee;--warn:#b45309;--err:#c62828}
+@media (prefers-color-scheme: dark){:root{--bg:#0f0f14;--card:#1a1a22;--txt:#ececf1;--sub:#9a9aa8;--borde:#2c2c38;--acento:#a78bfa;--ok:#34d399;--okbg:#10291f;--warn:#fbbf24;--err:#f87171}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;padding-bottom:40px}
+body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;padding-top:max(16px,env(safe-area-inset-top));padding-bottom:40px}
 main{max-width:640px;margin:0 auto}
-h1{font-size:1.4rem;margin:4px 0 14px}
-h2{font-size:1rem;margin:18px 0 6px}
-form{display:flex;gap:8px;flex-wrap:wrap}
-input,select,button{font:inherit;border-radius:12px;border:1px solid var(--borde);background:var(--card);color:var(--txt);padding:12px}
-input{flex:1 1 200px;min-width:0}
-button{background:var(--acento);color:#fff;border:none;font-weight:600;cursor:pointer}
-.ajustes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0 4px}
-.ajustes label{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--sub)}
-.ajustes select{padding:10px;font-size:.92rem;width:100%}
-@media (max-width:380px){.ajustes{grid-template-columns:1fr}}
-.cot{font-size:.82rem;color:var(--sub);margin-bottom:6px}
-.card{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:14px;margin:10px 0}
-.card.mejor{border:2px solid var(--ok)}
-.tienda{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--sub);display:flex;justify-content:space-between;gap:8px}
-.badge{background:var(--ok);color:#fff;border-radius:99px;padding:1px 8px;font-size:.72rem;letter-spacing:0;text-transform:none;white-space:nowrap}
-.titulo{font-weight:600;margin:4px 0}
+h1{font-size:1.25rem;margin:4px 0 12px}
+h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);margin:22px 0 8px;font-weight:600}
 a{color:inherit}
-.precio{font-size:1.5rem;font-weight:700}
-.tachado{text-decoration:line-through;color:var(--sub);font-size:.95rem;margin-left:6px;font-weight:400}
-.desc{color:var(--ok);font-weight:600;font-size:.9rem;margin-left:6px}
-.det{color:var(--sub);font-size:.82rem}
-.aviso{color:var(--warn);font-size:.82rem;margin-top:6px}
-.global{margin-top:6px;font-size:.92rem}
+form{display:flex;gap:8px}
+input,select,button{font:inherit;border-radius:12px;border:1px solid var(--borde);background:var(--card);color:var(--txt);padding:12px}
+input{flex:1;min-width:0}
+button{background:var(--acento);color:#fff;border:none;font-weight:600;cursor:pointer}
+button.sec{background:var(--card);color:var(--acento);border:1px solid var(--borde);padding:8px 12px;font-size:.9rem}
+details>summary{cursor:pointer;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+/* Ajustes */
+.ajustes{margin:10px 0 0;font-size:.85rem;color:var(--sub)}
+.ajustes>summary{padding:4px 0}
+.ajustes>summary::after{content:" ▾"}
+.ajustes[open]>summary::after{content:" ▴"}
+.grilla{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.grilla label{display:flex;flex-direction:column;gap:4px;font-size:.78rem}
+.grilla label.ancho{grid-column:1/-1}
+.grilla select{padding:10px;font-size:.92rem;width:100%}
+.cot{font-size:.8rem;margin-top:8px}
+/* Resultado */
+.juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:20px}
+.juego h3{font-size:1.5rem;line-height:1.2;margin:0}
+.guardar{flex:none}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:.85rem;align-items:center;color:var(--sub)}
+.chip{background:var(--card);border:1px solid var(--borde);border-radius:99px;padding:5px 11px;color:var(--txt);cursor:pointer;font-size:.85rem}
+.lista{background:var(--card);border:1px solid var(--borde);border-radius:16px;overflow:hidden}
+.fila{border-bottom:1px solid var(--borde)}
+.fila:last-child{border-bottom:none}
+.fila>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 14px}
+.fila.mejor>summary{background:var(--okbg)}
+.fila>summary>span:first-child{flex:1;min-width:0}
+.fila .tienda{font-weight:600}
+.fila .nota{display:block;font-size:.78rem;color:var(--sub);font-weight:400}
+.fila .precio{font-weight:700;font-size:1.15rem;white-space:nowrap;text-align:right}
+.fila .precio small{display:block;font-size:.72rem;font-weight:600;color:var(--ok)}
+.fila.mejor .precio{color:var(--ok)}
+.fila>summary::after{content:"›";color:var(--sub);font-size:1.3rem;transition:transform .15s}
+.fila[open]>summary::after{transform:rotate(90deg)}
+.det{padding:0 14px 14px;font-size:.88rem;color:var(--sub)}
+.det p{margin:6px 0}
+.det .link{color:var(--acento);font-weight:600}
+.det ul{margin:6px 0 0;padding-left:18px}
+.det li{margin:3px 0}
+.det .warn{color:var(--warn)}
+.tachado{text-decoration:line-through}
+.falta{font-size:.85rem;color:var(--sub);margin-top:10px}
+.falta a{color:var(--acento)}
+.extras{margin-top:12px;font-size:.9rem}
+.extras>summary{color:var(--acento);padding:6px 0}
+.extras ul{list-style:none;padding:0;margin:4px 0 0;background:var(--card);border:1px solid var(--borde);border-radius:12px}
+.extras li{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;border-bottom:1px solid var(--borde)}
+.extras li:last-child{border-bottom:none}
+.extras li span:last-child{white-space:nowrap;font-weight:600}
+.extras .t{display:block;font-size:.75rem;color:var(--sub)}
+/* Mis juegos */
+.bib{background:var(--card);border:1px solid var(--borde);border-radius:16px;overflow:hidden}
+.bib-item{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--borde)}
+.bib-item:last-child{border-bottom:none}
+.bib-item .info{flex:1;min-width:0;cursor:pointer}
+.bib-item .nom{font-weight:600}
+.bib-item .sub{font-size:.8rem;color:var(--sub)}
+.bib-item .p{font-weight:700;white-space:nowrap;text-align:right}
+.bib-item .p small{display:block;font-size:.72rem;font-weight:600}
+.baja{color:var(--ok)}.sube{color:var(--err)}
+.x{background:none;border:none;color:var(--sub);font-size:1.1rem;padding:4px 6px}
+.acciones{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px}
+.vacio,.cargando{color:var(--sub);text-align:center;padding:28px 10px}
 .error{color:var(--err)}
-.link{color:var(--acento)}
-.otros{list-style:none;margin:10px 0 0;padding:10px 0 0;border-top:1px solid var(--borde)}
-.otros li{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:.9rem}
-.otros li span:last-child{white-space:nowrap;font-weight:600}
-.otros .det{font-weight:400;display:block}
-.ranking{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:6px 14px;list-style:none;margin:0}
-.ranking li{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--borde)}
-.ranking li:last-child{border-bottom:none}
-.ranking .t{font-size:.78rem;color:var(--sub);display:block}
-.ranking .p{font-weight:700;white-space:nowrap}
-.ranking li:first-child .p{color:var(--ok)}
-.vacio,.cargando{color:var(--sub);text-align:center;padding:24px}
-.pie{color:var(--sub);font-size:.78rem;margin-top:20px}
+.pie{color:var(--sub);font-size:.76rem;margin-top:24px}
 </style>
 </head>
 <body>
 <main>
 <h1>🎮 Precios de Juegos</h1>
 <form id="f">
-  <input id="q" type="search" placeholder="Nombre del juego…" autocomplete="off" enterkeyhint="search" required>
-  <select id="pais" aria-label="País"></select>
+  <input id="q" type="search" placeholder="¿Qué juego buscás?" autocomplete="off" enterkeyhint="search" required>
   <button type="submit">Buscar</button>
 </form>
-<div id="panelAR">
-  <div class="ajustes">
-    <label>Impuestos
+<details class="ajustes" id="ajustes">
+  <summary id="resumenAjustes">Ajustes</summary>
+  <div class="grilla">
+    <label class="ancho">Impuestos
       <select id="imp">
         <option value="23">IVA 21% + IIBB 2% (CABA / Bs. As.)</option>
         <option value="24">IVA 21% + IIBB 3%</option>
@@ -610,10 +725,13 @@ a{color:inherit}
     <label>Cómo pagás los dólares
       <select id="tipoDolar"></select>
     </label>
+    <label>País
+      <select id="pais"></select>
+    </label>
   </div>
   <div class="cot" id="cot"></div>
-</div>
-<div id="res"><div class="vacio">Buscá un juego para comparar Steam, Xbox y Nintendo.</div></div>
+</details>
+<div id="res"></div>
 <div class="pie" id="pie"></div>
 </main>
 <script>
@@ -621,7 +739,7 @@ const PAISES = __PAISES__;
 const $ = s => document.querySelector(s);
 const leer = (k, d) => { try { return localStorage.getItem(k) ?? d } catch { return d } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v) } catch {} };
-let ultimo = null, dolar = null;
+let ultimo = null, dolar = null, juegoSel = null;
 
 for (const [c, p] of Object.entries(PAISES)) $("#pais").add(new Option(p.nombre, c));
 $("#pais").value = leer("pais", "AR");
@@ -630,11 +748,12 @@ $("#imp").value = leer("imp2", "23");
 const esAR = () => $("#pais").value === "AR";
 function fmt(valor, moneda) {
   if (valor === 0) return "Gratis";
-  try { return new Intl.NumberFormat("es-AR", {style: "currency", currency: moneda || "USD", maximumFractionDigits: 2}).format(valor) }
+  try { return new Intl.NumberFormat("es-AR", {style: "currency", currency: moneda || "USD", maximumFractionDigits: moneda === "ARS" && valor >= 1000 ? 0 : 2}).format(valor) }
   catch { return (moneda || "") + " " + valor.toFixed(2) }
 }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])) }
 
+/* ---------- Dólar y ajustes ---------- */
 async function cargarDolar() {
   try {
     const r = await fetch("/api/dolar"); dolar = await r.json();
@@ -642,127 +761,222 @@ async function cargarDolar() {
     const sel = $("#tipoDolar"); sel.innerHTML = "";
     const etiquetas = {oficial: "Tarjeta (oficial)", bolsa: "Tus dólares (MEP)"};
     for (const [k, nombre] of Object.entries(etiquetas)) if (dolar[k]) sel.add(new Option(nombre, k));
-    const guardado = leer("tipoDolar2", "oficial");
-    sel.value = dolar[guardado] ? guardado : Object.keys(dolar)[0];
+    const g = leer("tipoDolar2", "oficial");
+    sel.value = dolar[g] ? g : "oficial";
   } catch { dolar = null }
-  actualizarPanel(); pintar();
+  actualizarAjustes(); pintar();
 }
 
-function actualizarPanel() {
-  $("#panelAR").style.display = esAR() ? "" : "none";
+function actualizarAjustes() {
+  const ar = esAR();
+  $("#imp").closest("label").style.display = ar ? "" : "none";
+  $("#tipoDolar").closest("label").style.display = ar ? "" : "none";
+  const imp = $("#imp").selectedOptions[0].textContent.replace(" (CABA / Bs. As.)", "");
+  $("#resumenAjustes").textContent = ar
+    ? `⚙️ ${PAISES.AR.nombre} · ${$("#imp").value === "0" ? "sin impuestos" : imp} · ${$("#tipoDolar").selectedOptions[0]?.textContent || "dólar oficial"}`
+    : `⚙️ ${PAISES[$("#pais").value].nombre} · precios sin impuestos locales`;
   const d = dolar && dolar[$("#tipoDolar").value];
-  if (!dolar) $("#cot").textContent = "No se pudo obtener la cotización del dólar: los precios en dólares no se pasan a pesos.";
+  if (!ar) $("#cot").textContent = "";
+  else if (!dolar) $("#cot").textContent = "No se pudo obtener la cotización del dólar.";
   else if (d) {
     const f = d.actualizado ? new Date(d.actualizado).toLocaleString("es-AR", {dateStyle: "short", timeStyle: "short"}) : "";
     $("#cot").textContent = `1 US$ = ${fmt(d.venta, "ARS")} (dólar ${d.nombre}${f ? ", " + f : ""})` +
-      (dolar.cripto ? ` · Tarjeta Global ≈ ${fmt(dolar.cripto.venta, "ARS")} (dólar cripto, varía según la billetera)` : "");
+      (dolar.cripto ? ` · Tarjeta Global ≈ ${fmt(dolar.cripto.venta, "ARS")} (dólar cripto)` : "");
   }
-  $("#pie").textContent = esAR()
-    ? "Desde abril de 2025 los videojuegos no pagan la percepción de Ganancias (RG ARCA 5677): con tarjeta argentina o con tus dólares se suma IVA 21% más Ingresos Brutos de tu provincia. Steam, Xbox y la eShop argentina no aceptan tarjeta Global, así que el IVA se paga siempre. La eShop de EE.UU. sí la acepta: con una tarjeta Global no se paga IVA ni IIBB, pero se usa la cotización de esa billetera (acá se aproxima con el dólar cripto). Algunas billeteras suman comisión o dan cashback. Los precios salen de las APIs de cada tienda: confirmá antes de comprar. Más detalle en impuestito.org."
-    : "Los precios salen de las APIs de cada tienda y no incluyen impuestos locales. Confirmá en la tienda antes de comprar.";
+  $("#pie").textContent = ar
+    ? "Precios finales con tarjeta argentina: precio de la tienda + IVA 21% + Ingresos Brutos (los juegos no pagan la percepción de Ganancias desde abril de 2025). Steam, Xbox y la eShop argentina no aceptan tarjeta Global; la eShop de EE.UU. sí, y con ella no se paga IVA ni IIBB. Confirmá siempre en la tienda antes de comprar."
+    : "Precios de las APIs de cada tienda, sin impuestos locales. Confirmá en la tienda antes de comprar.";
 }
 
-// Calcula el precio final en pesos (con impuestos) y su desglose.
+/* ---------- Cálculo de precios ---------- */
 function calcular(it) {
-  const base = {valor: it.precio, original: it.precio_original, moneda: it.moneda, desglose: ""};
-  if (!esAR()) return base;
+  const r = {valor: it.precio, original: it.precio_original, moneda: it.moneda, partes: []};
+  if (!esAR()) return r;
   const d = dolar && dolar[$("#tipoDolar").value];
-  let factorMoneda;
-  if (it.moneda === "ARS") factorMoneda = 1;
-  else if (it.moneda === "USD" && d) factorMoneda = d.venta;
-  else return base;
+  let cambio;
+  if (it.moneda === "ARS") cambio = 1;
+  else if (it.moneda === "USD" && d) cambio = d.venta;
+  else return r;
   const tasa = Number($("#imp").value) / 100;
-  const enPesos = it.precio * factorMoneda;
-  const final = enPesos * (1 + tasa);
-  const partes = [];
-  if (it.moneda === "USD") partes.push(`${fmt(it.precio, "USD")} = ${fmt(enPesos, "ARS")}`);
-  else partes.push(`Precio tienda ${fmt(enPesos, "ARS")}`);
-  if (tasa > 0 && it.precio > 0) {
-    partes.push(`+ IVA ${fmt(enPesos * 0.21, "ARS")}`);
-    if (tasa > 0.21) partes.push(`+ IIBB ${fmt(enPesos * (tasa - 0.21), "ARS")}`);
+  const base = it.precio * cambio;
+  r.valor = base * (1 + tasa);
+  r.original = it.precio_original ? it.precio_original * cambio * (1 + tasa) : null;
+  r.moneda = "ARS";
+  if (it.precio > 0) {
+    r.partes.push(it.moneda === "USD" ? `${fmt(it.precio, "USD")} en la tienda = ${fmt(base, "ARS")}` : `Precio en la tienda: ${fmt(base, "ARS")}`);
+    if (tasa > 0) r.partes.push(`IVA 21%: ${fmt(base * 0.21, "ARS")}`);
+    if (tasa > 0.21) r.partes.push(`IIBB ${Math.round((tasa - 0.21) * 100)}%: ${fmt(base * (tasa - 0.21), "ARS")}`);
   }
-  return {
-    valor: final,
-    original: it.precio_original ? it.precio_original * factorMoneda * (1 + tasa) : null,
-    moneda: "ARS",
-    desglose: it.precio > 0 ? partes.join(" ") : "",
-  };
+  return r;
 }
 
-// Precio con tarjeta Global (sin IVA ni IIBB), solo en tiendas que la aceptan.
-function calcularGlobal(t, it) {
-  if (!esAR() || !t.acepta_global || it.moneda !== "USD" || !(it.precio > 0) || !dolar || !dolar.cripto) return null;
-  return it.precio * dolar.cripto.venta;
+// El resultado de una tienda que corresponde al juego elegido (el juego base,
+// no una edición ni un DLC), más las otras ediciones del mismo juego.
+function elegir(t, clave) {
+  const mismos = t.resultados.filter(r => r.clave === clave && r.tipo !== "extra");
+  if (!mismos.length) return null;
+  const hayPago = mismos.some(r => r.precio > 0);
+  mismos.sort((a, b) => (a.tipo !== "juego") - (b.tipo !== "juego") || (hayPago ? (a.precio <= 0) - (b.precio <= 0) : 0) || a.precio - b.precio);
+  return {it: mismos[0], otras: mismos.slice(1)};
 }
 
+// Todas las formas de comprar el juego, ordenadas por precio final.
+function opciones(datos, clave) {
+  const filas = [], faltan = [];
+  for (const t of datos.tiendas) {
+    const e = t.ok ? elegir(t, clave) : null;
+    if (!e) { faltan.push(t); continue; }
+    const c = calcular(e.it);
+    filas.push({t, ...e, c, nombre: t.tienda});
+    if (esAR() && t.acepta_global && e.it.moneda === "USD" && e.it.precio > 0 && dolar && dolar.cripto) {
+      filas.push({t, it: e.it, otras: [], global: true, nombre: t.tienda.replace("Nintendo eShop", "eShop") + " · tarjeta Global",
+                  c: {valor: e.it.precio * dolar.cripto.venta, moneda: "ARS", partes: [`${fmt(e.it.precio, "USD")} al dólar cripto (≈ cotización de billeteras Global)`, "Sin IVA ni IIBB"]}});
+    }
+  }
+  const monedas = new Set(filas.map(f => f.c.moneda));
+  if (monedas.size <= 1) filas.sort((a, b) => (a.c.valor <= 0) - (b.c.valor <= 0) || a.c.valor - b.c.valor);
+  return {filas, faltan, comparables: monedas.size <= 1};
+}
+
+/* ---------- Mis juegos (se guarda en este celular) ---------- */
+function biblioteca() { try { return JSON.parse(leer("biblioteca", "[]")) } catch { return [] } }
+function guardarBiblioteca(b) { guardar("biblioteca", JSON.stringify(b)) }
+const enBiblioteca = clave => biblioteca().some(j => j.clave === clave && j.pais === $("#pais").value);
+
+function mejorOpcion(datos, clave) {
+  const {filas, comparables} = opciones(datos, clave);
+  const f = filas.find(f => f.c.valor > 0);
+  return f && comparables ? {tienda: f.nombre, valor: f.c.valor, moneda: f.c.moneda} : null;
+}
+
+function actualizarEnBiblioteca(datos, clave) {
+  const b = biblioteca(); const j = b.find(j => j.clave === clave && j.pais === datos.pais);
+  if (!j) return;
+  const m = mejorOpcion(datos, clave);
+  if (m && (!j.mejor || Math.round(m.valor) !== Math.round(j.mejor.valor))) j.anterior = j.mejor;
+  if (m) j.mejor = m;
+  j.fecha = Date.now();
+  guardarBiblioteca(b);
+}
+
+function alternarGuardado() {
+  const g = ultimo.juegos.find(g => g.clave === juegoSel);
+  let b = biblioteca();
+  if (enBiblioteca(juegoSel)) b = b.filter(j => !(j.clave === juegoSel && j.pais === $("#pais").value));
+  else b.unshift({clave: juegoSel, titulo: g.titulo, pais: $("#pais").value, mejor: mejorOpcion(ultimo, juegoSel), fecha: Date.now()});
+  guardarBiblioteca(b); pintar();
+}
+
+function pintarBiblioteca() {
+  const b = biblioteca();
+  if (!b.length) return `<div class="vacio">Buscá un juego para ver cuánto pagarías en Steam, Xbox y Nintendo.<br><br>Tocá ☆ en un juego para guardarlo en <b>Mis juegos</b> y seguir su precio.</div>`;
+  return `<h2>⭐ Mis juegos</h2><div class="bib">${b.map((j, i) => {
+    let cambio = "";
+    if (j.anterior && j.mejor && j.anterior.moneda === j.mejor.moneda) {
+      const dif = j.mejor.valor - j.anterior.valor;
+      cambio = `<small class="${dif < 0 ? "baja" : "sube"}">${dif < 0 ? "▼ bajó" : "▲ subió"} ${fmt(Math.abs(dif), j.mejor.moneda)}</small>`;
+    }
+    const f = new Date(j.fecha).toLocaleDateString("es-AR", {day: "numeric", month: "short"});
+    return `<div class="bib-item">
+      <div class="info" data-buscar="${esc(j.titulo)}" data-pais="${esc(j.pais)}"><div class="nom">${esc(j.titulo)}</div>
+        <div class="sub">${j.mejor ? `Más barato en ${esc(j.mejor.tienda)}` : "Sin precio"} · ${f}${j.pais !== "AR" ? " · " + esc(PAISES[j.pais]?.nombre || j.pais) : ""}</div></div>
+      <div class="p">${j.mejor ? fmt(j.mejor.valor, j.mejor.moneda) : "—"}${cambio}</div>
+      <button class="x" data-borrar="${i}" aria-label="Quitar">✕</button></div>`;
+  }).join("")}</div>
+  <div class="acciones"><span class="sub" style="font-size:.78rem;color:var(--sub)">Se guarda en este celular.</span><button class="sec" id="actualizarTodo">↻ Actualizar precios</button></div>`;
+}
+
+async function actualizarTodo(boton) {
+  const b = biblioteca();
+  for (let i = 0; i < b.length; i++) {
+    boton.textContent = `Actualizando ${i + 1}/${b.length}…`; boton.disabled = true;
+    try {
+      const r = await fetch(`/api/buscar?q=${encodeURIComponent(b[i].titulo)}&pais=${b[i].pais}`);
+      actualizarEnBiblioteca(await r.json(), b[i].clave);
+    } catch {}
+  }
+  pintar();
+}
+
+/* ---------- Pantalla ---------- */
 function pintar() {
   const res = $("#res");
-  if (!ultimo) return;
+  if (!ultimo) { res.innerHTML = pintarBiblioteca(); return }
+  if (ultimo.cargando) { res.innerHTML = '<div class="cargando">Buscando en las tiendas…</div>'; return }
   if (ultimo.error) { res.innerHTML = `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
-
-  const tiendas = ultimo.tiendas.map(t => ({
-    t,
-    it: t.coincide ? t.resultados[0] : null,
-    resto: t.coincide ? t.resultados.slice(1) : t.resultados,
-  }));
-  for (const x of tiendas) { x.c = x.it && calcular(x.it); x.g = x.it && calcularGlobal(x.t, x.it); }
-
-  // Resumen: el mejor resultado de cada tienda, ordenado por precio final.
-  // Las tiendas que aceptan tarjeta Global suman una segunda opción.
-  const enRanking = tiendas.filter(x => x.c && x.c.valor > 0);
-  for (const x of tiendas) if (x.g) enRanking.push({t: {tienda: x.t.tienda + " con tarjeta Global"}, it: x.it, c: {valor: x.g, moneda: "ARS"}, global: true, de: x});
-  const monedas = new Set(enRanking.map(x => x.c.moneda));
-  let html = "";
-  if (enRanking.length > 1 && monedas.size === 1) {
-    enRanking.sort((a, b) => a.c.valor - b.c.valor);
-    html += `<h2>Todas las opciones${esAR() && $("#imp").value !== "0" ? ", con impuestos" : ""}</h2><ol class="ranking">${
-      enRanking.map(x => `<li><span>${esc(x.t.tienda)}<span class="t">${esc(x.it.titulo)}</span></span><span class="p">${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")
-    }</ol>`;
+  if (!ultimo.juegos.length) {
+    res.innerHTML = `<div class="vacio">No encontré "${esc(ultimo.consulta)}" en ninguna tienda.<br>Probá con el nombre completo o en inglés.</div>`;
+    return;
   }
-  const primero = enRanking.length > 1 && monedas.size === 1 ? enRanking[0] : null;
-  const mejor = primero && primero.global ? primero.de : primero;
+  if (!ultimo.juegos.some(g => g.clave === juegoSel)) juegoSel = ultimo.juegos[0].clave;
+  const g = ultimo.juegos.find(g => g.clave === juegoSel);
+  const {filas, faltan, comparables} = opciones(ultimo, juegoSel);
+  const conImp = esAR() && $("#imp").value !== "0";
+  const mejor = comparables && filas.length > 1 && filas[0].c.valor > 0 ? filas[0] : null;
+  const guardado = enBiblioteca(juegoSel);
 
-  html += `<h2>Detalle por tienda</h2>` + tiendas.map(x => {
-    const {t, it, c, resto} = x;
-    let cuerpo;
-    if (!t.ok) cuerpo = `<div class="error">⚠️ ${esc(t.error)}</div>`;
-    else if (!it) cuerpo = `<div class="det">No se encontró este juego.${t.buscar_url ? ` <a class="link" href="${esc(t.buscar_url)}" target="_blank" rel="noopener">Buscar en la tienda</a>` : ""}</div>`;
-    else {
-      const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
-      cuerpo = `<div class="titulo"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.titulo)}</a></div>
-        <div><span class="precio">${fmt(c.valor, c.moneda)}</span>${c.original ? `<span class="tachado">${fmt(c.original, c.moneda)}</span><span class="desc">-${pct}%</span>` : ""}</div>
-        ${c.desglose ? `<div class="det">${esc(c.desglose)}</div>` : ""}
-        ${x.g ? `<div class="global">Con tarjeta Global: <b>${fmt(x.g, "ARS")}</b> <span class="det">(${fmt(x.it.precio, "USD")} al dólar cripto, sin IVA ni IIBB)</span></div>` : ""}`;
-    }
-    if (t.ok && resto.length) {
-      cuerpo += `<ul class="otros">${resto.map(o => {
-        const oc = calcular(o);
-        return `<li><span><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>${oc.moneda !== o.moneda ? `<span class="det">${fmt(o.precio, o.moneda)} en la tienda</span>` : ""}</span><span>${fmt(oc.valor, oc.moneda)}</span></li>`;
-      }).join("")}</ul>`;
-    }
-    return `<div class="card${x === mejor ? " mejor" : ""}">
-      <div class="tienda"><span>${esc(t.tienda)}</span>${x === mejor ? '<span class="badge">Más barato</span>' : ""}</div>
-      ${cuerpo}${t.aviso ? `<div class="aviso">${esc(t.aviso)}</div>` : ""}</div>`;
-  }).join("");
+  let html = `<div class="juego"><h3>${esc(g.titulo)}</h3>
+    <button class="sec guardar" id="guardar">${guardado ? "★ Guardado" : "☆ Guardar"}</button></div>`;
+  const otros = ultimo.juegos.filter(x => x.clave !== juegoSel);
+  if (otros.length) html += `<div class="chips">¿Buscabas otro? ${otros.map(x => `<button class="chip" data-juego="${esc(x.clave)}">${esc(x.titulo)}</button>`).join("")}</div>`;
+
+  html += `<h2>Lo que pagarías${conImp ? " (con impuestos)" : ""}</h2><div class="lista">${filas.map(f => {
+    const {it, c, otras} = f;
+    const nota = f.global ? "Sin IVA ni IIBB" : (it.titulo.toLowerCase() !== g.titulo.toLowerCase() ? it.titulo : "");
+    const pct = c.original ? Math.round((1 - c.valor / c.original) * 100) : 0;
+    const det = [];
+    if (!f.global) det.push(`<p><a class="link" href="${esc(it.url)}" target="_blank" rel="noopener">Ver en la tienda ↗</a></p>`);
+    if (c.original) det.push(`<p>En oferta: antes <span class="tachado">${fmt(c.original, c.moneda)}</span></p>`);
+    if (c.partes.length) det.push(`<p>${c.partes.map(esc).join("<br>")}</p>`);
+    if (otras.length) det.push(`<p>Otras ediciones en esta tienda:</p><ul>${otras.map(o => `<li><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>: ${fmt(calcular(o).valor, calcular(o).moneda)}</li>`).join("")}</ul>`);
+    if (f.t.aviso && !f.global) det.push(`<p class="warn">${esc(f.t.aviso)}</p>`);
+    if (f.global) det.push(`<p class="warn">Necesitás una cuenta de Nintendo de EE.UU. y una tarjeta emitida afuera (AstroPay Global, Lemon Global, etc.). La cotización real depende de la billetera.</p>`);
+    return `<details class="fila${f === mejor ? " mejor" : ""}"><summary>
+      <span><span class="tienda">${esc(f.nombre)}</span>${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
+      <span class="precio">${fmt(c.valor, c.moneda)}${f === mejor || pct ? `<small>${[f === mejor ? "Más barato" : "", pct ? `-${pct}%` : ""].filter(Boolean).join(" · ")}</small>` : ""}</span>
+    </summary><div class="det">${det.join("")}</div></details>`;
+  }).join("")}</div>`;
+
+  if (faltan.length) html += `<div class="falta">No está en: ${faltan.map(t => t.buscar_url
+    ? `<a href="${esc(t.buscar_url)}" target="_blank" rel="noopener">${esc(t.tienda)}</a>` : esc(t.tienda)).join(", ")}${faltan.some(t => !t.ok) ? " (alguna tienda no respondió)" : ""}</div>`;
+
+  // DLC y extras de este juego
+  const extras = [];
+  for (const t of ultimo.tiendas) for (const r of t.resultados)
+    if (r.tipo === "extra" && r.clave.startsWith(juegoSel)) extras.push({t, r, c: calcular(r)});
+  if (extras.length) html += `<details class="extras"><summary>DLC y extras (${extras.length})</summary><ul>${extras.map(x =>
+    `<li><span><a href="${esc(x.r.url)}" target="_blank" rel="noopener">${esc(x.r.titulo)}</a><span class="t">${esc(x.t.tienda)}</span></span><span>${fmt(x.c.valor, x.c.moneda)}</span></li>`).join("")}</ul></details>`;
+
   res.innerHTML = html;
+  if (guardado) actualizarEnBiblioteca(ultimo, juegoSel);
 }
 
-$("#f").addEventListener("submit", async e => {
-  e.preventDefault();
-  const q = $("#q").value.trim(); if (!q) return;
-  $("#q").blur();
-  $("#res").innerHTML = '<div class="cargando">Buscando en las tiendas…</div>';
+/* ---------- Eventos ---------- */
+async function buscar(q) {
+  $("#q").value = q; $("#q").blur();
+  ultimo = {cargando: true}; juegoSel = null; pintar();
   try {
     const r = await fetch(`/api/buscar?q=${encodeURIComponent(q)}&pais=${$("#pais").value}`);
     ultimo = await r.json();
   } catch { ultimo = {error: "No se pudo conectar con el servidor. Si recién lo abriste, esperá un minuto y probá de nuevo."} }
   pintar();
+}
+$("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
+$("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
+$("#res").addEventListener("click", e => {
+  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],#guardar,#actualizarTodo");
+  if (!el) return;
+  if (el.dataset.juego) { juegoSel = el.dataset.juego; pintar(); window.scrollTo({top: 0, behavior: "smooth"}) }
+  else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar) }
+  else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
+  else if (el.id === "guardar") alternarGuardado();
+  else if (el.id === "actualizarTodo") actualizarTodo(el);
 });
-$("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarPanel(); if ($("#q").value.trim()) $("#f").requestSubmit() });
-$("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); pintar() });
-$("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarPanel(); pintar() });
-actualizarPanel();
-cargarDolar();
+$("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarAjustes(); const q = $("#q").value.trim(); if (q && ultimo) buscar(q); else pintar() });
+$("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); actualizarAjustes(); pintar() });
+$("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarAjustes(); pintar() });
+$("h1").addEventListener("click", () => { $("#q").value = ""; ultimo = null; pintar() });
+actualizarAjustes(); pintar(); cargarDolar();
 </script>
 </body>
 </html>
