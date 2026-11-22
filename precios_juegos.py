@@ -12,6 +12,7 @@ Uso local:
 En la nube (Render, etc.) el puerto llega en la variable de entorno PORT.
 """
 
+import html
 import json
 import os
 import re
@@ -500,6 +501,94 @@ def cotizacion_dolar():
 
 
 # --------------------------------------------------------------------------
+# Mega descuentos
+# --------------------------------------------------------------------------
+
+def _descuentos_steam(pais):
+    """Los más vendidos de Steam que están en oferta (solo juegos)."""
+    url = "https://store.steampowered.com/search/results/?" + urllib.parse.urlencode({
+        "specials": 1, "filter": "topsellers", "category1": 998, "cc": pais,
+        "l": "spanish", "infinite": 1, "count": 100,
+    })
+    h = http_json(url).get("results_html", "")
+    items = []
+    for fila in h.split('<a href="')[1:]:
+        appid = re.search(r'data-ds-appid="(\d+)"', fila)
+        titulo = re.search(r'<span class="title">(.*?)</span>', fila, re.S)
+        desc = re.search(r'data-discount="(\d+)"', fila)
+        final = re.search(r'data-price-final="(\d+)"', fila)
+        if not (appid and titulo and desc and final) or int(desc.group(1)) <= 0:
+            continue
+        pct = int(desc.group(1))
+        precio = int(final.group(1)) / 100
+        items.append({
+            "tienda": "Steam", "titulo": html.unescape(titulo.group(1)).strip(),
+            "precio": precio, "precio_original": round(precio / (1 - pct / 100), 2) if pct < 100 else None,
+            "moneda": "USD" if pais == "AR" else "", "descuento": pct,
+            "url": f"https://store.steampowered.com/app/{appid.group(1)}/",
+        })
+    return items
+
+
+def _descuentos_nintendo(pais, minimo):
+    """Ofertas de la eShop (EE.UU. según Algolia) con el precio de cada región."""
+    url = f"https://{ALGOLIA_APP.lower()}-dsn.algolia.net/1/indexes/*/queries"
+    datos = http_json(
+        url,
+        data={"requests": [{
+            "indexName": "store_game_en_us", "query": "",
+            "params": urllib.parse.urlencode({
+                "hitsPerPage": 100,
+                "filters": 'topLevelFilters:"Deals"',
+                "numericFilters": f"price.percentOff>={minimo}",
+            }),
+        }]},
+        headers={"x-algolia-application-id": ALGOLIA_APP, "x-algolia-api-key": ALGOLIA_KEY},
+    )
+    juegos = {}
+    for h_ in datos["results"][0].get("hits", []):
+        nsuid = str(h_.get("nsuid") or "")
+        if not nsuid.isdigit() or (h_.get("dlcType") and h_.get("dlcType") != "ROM Bundle"):
+            continue
+        titulo = re.sub(r"\s+", " ", h_.get("title", "")).strip()
+        if h_.get("platformCode") == "NINTENDO_SWITCH_2" and "switch 2" not in titulo.lower():
+            titulo += " (Switch 2)"
+        juegos[nsuid] = {"titulo": titulo, "url": "https://www.nintendo.com" + (h_.get("url") or "")}
+    salida = []
+    regiones = [pais, "US"] if pais in NINTENDO_REFERENCIA_US else [pais]
+    ids = list(juegos)
+    for region in regiones:
+        nombre = "Nintendo eShop " + ("EE.UU." if region == "US" else PAISES[region]["nombre"]) if len(regiones) > 1 else "Nintendo eShop"
+        for i in range(0, len(ids), 50):  # la API acepta hasta 50 por consulta
+            for nsuid, pr in _nintendo_precios(ids[i:i + 50], region).items():
+                if not pr["precio_original"]:
+                    continue  # en esta región no está en oferta
+                pct = round((1 - pr["precio"] / pr["precio_original"]) * 100)
+                salida.append({
+                    "tienda": nombre, **juegos[nsuid], "precio": pr["precio"],
+                    "precio_original": pr["precio_original"], "moneda": pr["moneda"],
+                    "descuento": pct, "acepta_global": region == "US" and pais == "AR",
+                })
+    return salida
+
+
+def mega_descuentos(pais, minimo=50):
+    def traer():
+        items, errores = [], []
+        for nombre, f in (("Steam", lambda: _descuentos_steam(pais)),
+                          ("Nintendo eShop", lambda: _descuentos_nintendo(pais, minimo))):
+            try:
+                items.extend(f())
+            except Exception as e:
+                print(f"[descuentos {nombre}] {type(e).__name__}: {e}", file=sys.stderr)
+                errores.append(f"{nombre}: {describir_error(e)}")
+        items = [i for i in items if i["descuento"] >= minimo and i["precio"] > 0]
+        items.sort(key=lambda i: i["descuento"], reverse=True)
+        return {"pais": pais, "minimo": minimo, "items": items, "errores": errores}
+    return cacheado(("descuentos", pais, minimo), traer, ttl=60 * 60)
+
+
+# --------------------------------------------------------------------------
 # Búsqueda combinada
 # --------------------------------------------------------------------------
 
@@ -715,6 +804,20 @@ details>summary::-webkit-details-marker{display:none}
 .baja{color:var(--ok)}.sube{color:var(--err)}
 .x{background:none;border:none;color:var(--sub);font-size:1.1rem;padding:4px 6px}
 .acciones{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px}
+.tabs{display:flex;gap:6px;margin-top:18px;border-bottom:1px solid var(--borde)}
+.tab{background:none;color:var(--sub);border:none;border-bottom:2px solid transparent;border-radius:0;padding:10px 8px;font-weight:600}
+.tab.activa{color:var(--txt);border-bottom-color:var(--acento)}
+.filtros{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 8px}
+.chip.activa{background:var(--acento);border-color:var(--acento);color:#fff}
+.ofertas{background:var(--card);border:1px solid var(--borde);border-radius:16px;overflow:hidden}
+.oferta{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--borde);cursor:pointer}
+.oferta:last-child{border-bottom:none}
+.oferta .pct{flex:none;background:var(--ok);color:#fff;font-weight:700;font-size:.82rem;border-radius:8px;padding:4px 6px;min-width:48px;text-align:center}
+.oferta .info{flex:1;min-width:0}
+.oferta .nom{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oferta .sub{font-size:.78rem;color:var(--sub)}
+.oferta .p{text-align:right;white-space:nowrap;font-weight:700}
+.oferta .p small{display:block;font-weight:400;font-size:.75rem;color:var(--sub);text-decoration:line-through}
 .vacio,.cargando{color:var(--sub);text-align:center;padding:28px 10px}
 .error{color:var(--err)}
 .pie{color:var(--sub);font-size:.76rem;margin-top:24px}
@@ -884,10 +987,46 @@ function alternarGuardado() {
   guardarBiblioteca(b); pintar();
 }
 
+let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "50")), filtroTienda = leer("filtroTienda", "todas"), mostrarOfertas = 40;
+
+function pintarInicio() {
+  const tabs = `<div class="tabs"><button class="tab${vista === "mis" ? " activa" : ""}" data-vista="mis">⭐ Mis juegos</button>
+    <button class="tab${vista === "ofertas" ? " activa" : ""}" data-vista="ofertas">🔥 Mega descuentos</button></div>`;
+  return tabs + (vista === "ofertas" ? pintarOfertas() : pintarBiblioteca());
+}
+
+async function cargarOfertas() {
+  ofertas = {cargando: true}; pintar();
+  try { ofertas = await (await fetch(`/api/descuentos?pais=${$("#pais").value}`)).json() }
+  catch { ofertas = {error: true} }
+  pintar();
+}
+
+function pintarOfertas() {
+  if (!ofertas || ofertas.pais !== $("#pais").value && !ofertas.cargando && !ofertas.error) { setTimeout(cargarOfertas); return '<div class="cargando">Buscando ofertas…</div>' }
+  if (ofertas.cargando) return '<div class="cargando">Buscando ofertas…</div>';
+  if (ofertas.error) return '<div class="vacio error">No se pudieron cargar las ofertas. Probá de nuevo en un rato.</div>';
+  const tiendas = [...new Set(ofertas.items.map(i => i.tienda))];
+  const lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda));
+  const chip = (attr, val, actual, texto) => `<button class="chip${val == actual ? " activa" : ""}" ${attr}="${esc(val)}">${esc(texto)}</button>`;
+  return `<div class="filtros">${[50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}% o más`)).join("")}</div>
+    <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
+    ${lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
+      const c = calcular(i);
+      return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
+        <span class="pct">-${i.descuento}%</span>
+        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}</div></span>
+        <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
+    }).join("")}</div>
+    ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
+    : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
+    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica una lista de ofertas, pero si un juego está rebajado ahí lo vas a ver al compararlo.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+}
+
 function pintarBiblioteca() {
   const b = biblioteca();
   if (!b.length) return `<div class="vacio">Buscá un juego para ver cuánto pagarías en Steam, Xbox y Nintendo.<br><br>Tocá ☆ en un juego para guardarlo en <b>Mis juegos</b> y seguir su precio.</div>`;
-  return `<h2>⭐ Mis juegos</h2><div class="bib">${b.map((j, i) => {
+  return `<div class="bib" style="margin-top:12px">${b.map((j, i) => {
     let cambio = "";
     if (j.anterior && j.mejor && j.anterior.moneda === j.mejor.moneda) {
       const dif = j.mejor.valor - j.anterior.valor;
@@ -918,7 +1057,7 @@ async function actualizarTodo(boton) {
 /* ---------- Pantalla ---------- */
 function pintar() {
   const res = $("#res");
-  if (!ultimo) { res.innerHTML = pintarBiblioteca(); return }
+  if (!ultimo) { res.innerHTML = pintarInicio(); return }
   if (ultimo.cargando) { res.innerHTML = '<div class="cargando">Buscando en las tiendas…</div>'; return }
   if (ultimo.error) { res.innerHTML = `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
   if (!ultimo.juegos.length) {
@@ -981,9 +1120,13 @@ async function buscar(q) {
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],#guardar,#actualizarTodo");
+  const el = e.target.closest("[data-juego],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#guardar,#actualizarTodo,#masOfertas");
   if (!el) return;
-  if (el.dataset.juego) { juegoSel = el.dataset.juego; pintar(); window.scrollTo({top: 0, behavior: "smooth"}) }
+  if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
+  else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
+  else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
+  else if (el.id === "masOfertas") { mostrarOfertas += 40; pintar() }
+  else if (el.dataset.juego) { juegoSel = el.dataset.juego; pintar(); window.scrollTo({top: 0, behavior: "smooth"}) }
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar) }
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
   else if (el.id === "guardar") alternarGuardado();
@@ -1041,6 +1184,10 @@ class Manejador(BaseHTTPRequestHandler):
             if not q:
                 return self._json({"error": "Falta el nombre del juego"}, 400)
             return self._json(buscar_todo(q, pais))
+        if ruta == "/api/descuentos":
+            pais = (args.get("pais") or ["AR"])[0].upper()
+            pais = pais if pais in PAISES else "AR"
+            return self._json(mega_descuentos(pais))
         if ruta == "/api/dolar":
             try:
                 return self._json(cotizacion_dolar())

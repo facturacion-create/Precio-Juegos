@@ -45,6 +45,7 @@ En el plan gratis, si nadie usa la página por 15 minutos, Render la "duerme". L
 - Si no era ese juego, tocá otro en **"¿Buscabas otro?"**.
 - Los DLC y extras están aparte, en **"DLC y extras"**.
 - Tocá **☆ Guardar** para sumar el juego a **Mis juegos** (en la pantalla principal). Con **↻ Actualizar precios** ves si subió o bajó. La lista se guarda en el celular.
+- En la pantalla principal, la pestaña **🔥 Mega descuentos** muestra las ofertas de 50% o más (podés filtrar 70% o 90%, y por tienda): los más vendidos en oferta de Steam y las ofertas de la eShop de Argentina y de EE.UU. Tocá uno para compararlo en todas las tiendas. Xbox no publica una lista de ofertas, pero si un juego está rebajado ahí, se ve al compararlo.
 - En **⚙️ Ajustes** cambiás los impuestos (según tu provincia), cómo pagás los dólares y el país.
 
 ## Notas sobre los precios
