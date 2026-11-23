@@ -50,10 +50,15 @@ NINTENDO_REFERENCIA_US = set()  # vacío: en Argentina se muestra solo la eShop 
 ALGOLIA_APP = "U3B6GR4UA3"
 ALGOLIA_KEY = "a29c6927638bfd8cee23993e51e721c9"
 
-PALABRAS_EXTRA = (
-    "soundtrack", "dlc", "upgrade", "pack", "demo", "theme", "season pass",
-    "expansion", "bundle", "lote", "tema", "actualizacion", "add-on", "addon",
+# Palabras que indican que algo NO es el juego en sí.
+# Fuertes: siempre (aunque la tienda lo clasifique como juego, como hace Xbox con las mejoras).
+EXTRA_FUERTES = (
+    "soundtrack", "dlc", "upgrade", "demo", "season pass", "add-on", "addon", "actualizacion",
+    "mejora", "guidebook", "artbook", "art book", "expansion pass", "costume", "skin",
 )
+# Débiles: solo si la tienda no confirma que es un juego ("Lote" en Xbox suele ser el juego completo).
+EXTRA_DEBILES = ("pack", "theme", "expansion", "bundle", "lote", "tema")
+PALABRAS_EXTRA = EXTRA_FUERTES + EXTRA_DEBILES
 
 
 # --------------------------------------------------------------------------
@@ -177,7 +182,15 @@ def sin_edicion(titulo):
         partes = _SEPARADOR.split(t)
         if len(partes) > 1 and any(e in normalizar(partes[-1]) for e in EDICIONES):
             ultimo = list(_SEPARADOR.finditer(t))[-1]
-            t = t[:ultimo.start()]
+            parte = partes[-1]
+            # 'ReFantazio Atlus 35th Anniversary Edition': sacar solo la edición
+            # (hasta 3 palabras antes de 'Edition') y conservar el subtítulo real.
+            resto = re.sub(r"(?:\s*\S+){0,3}\s*\b(edition|[eé]dici[oó]n)\b.*$", "", parte, flags=re.I).strip()
+            empieza_con_edicion = any(normalizar(parte).startswith(e) for e in EDICIONES)
+            if resto and not empieza_con_edicion and resto != parte:
+                t = t[:ultimo.end()] + resto
+            else:
+                t = t[:ultimo.start()]
         if t == antes or not t:
             return t or titulo
 
@@ -198,9 +211,10 @@ def clave(titulo):
     return t.strip() or normalizar(titulo)
 
 
-def es_extra_por_nombre(titulo):
+def es_extra_por_nombre(titulo, confirmado_juego=False):
     t = " " + normalizar(titulo) + " "
-    return any(f" {p} " in t for p in PALABRAS_EXTRA + IDIOMAS)
+    palabras = EXTRA_FUERTES + IDIOMAS if confirmado_juego else PALABRAS_EXTRA + IDIOMAS
+    return any(f" {p} " in t for p in palabras)
 
 
 def puntaje(consulta, item):
@@ -234,7 +248,7 @@ def preparar(consulta, items, tipo_origen=None):
         it["clave"] = clave(it["titulo"])
         tipo = it.pop("_tipo", None) or "juego"
         confirmado = it.pop("_es_juego", False)  # la tienda confirma que es un juego
-        if tipo != "extra" and not confirmado and es_extra_por_nombre(it["titulo"]):
+        if tipo != "extra" and es_extra_por_nombre(it["titulo"], confirmado):
             tipo = "extra"
         if tipo == "juego" and it["clave"] != normalizar(it["titulo"]):
             tipo = "edicion"
