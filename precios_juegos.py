@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from difflib import SequenceMatcher
+from difflib import SequenceMatcher, get_close_matches
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER_AGENT = "Mozilla/5.0 (compatible; precios-juegos/2.0)"
@@ -124,6 +124,76 @@ ALIAS = {
 
 _A_ROMANO = {v: k.upper() for k, v in ROMANOS.items() if k != "x"}
 
+NUMEROS_ES = {"uno": "1", "dos": "2", "tres": "3", "cuatro": "4", "cinco": "5", "seis": "6",
+              "siete": "7", "ocho": "8", "nueve": "9", "diez": "10"}
+
+# Palabras de títulos de juegos reales, para corregir errores de tipeo ('cyberpunck' -> 'cyberpunk').
+# Se llena con los más vendidos de Steam, el catálogo de Nintendo y de Game Pass, y cada búsqueda.
+_vocabulario = set()
+_titulos_conocidos = set()  # títulos normalizados, para corregir según el contexto
+_vocab_lock = threading.Lock()
+
+
+def sumar_vocabulario(titulos):
+    norm = {normalizar(t) for t in titulos if t}
+    nuevas = {p for t in norm for p in t.split() if len(p) >= 3 and not p.isdigit()}
+    with _vocab_lock:
+        _vocabulario.update(nuevas)
+        _titulos_conocidos.update(norm)
+
+
+def corregir(consulta):
+    """Corrige palabras que no existen en ningún título conocido. Devuelve la
+    consulta corregida (o la misma si no hay nada que corregir)."""
+    with _vocab_lock:
+        vocab = list(_vocabulario)
+        titulos = list(_titulos_conocidos)
+    if not vocab:
+        return consulta
+    vocab_set = set(vocab)
+    palabras = normalizar(consulta).split()
+    salida = []
+    for i, p in enumerate(palabras):
+        if len(p) >= 4 and not p.isdigit() and p not in vocab_set:
+            cerca = get_close_matches(p, vocab, n=8, cutoff=0.7)
+            otras = [w for j, w in enumerate(palabras) if j != i and w in vocab_set]
+
+            def en_contexto(c):  # ¿hay un título real con esta palabra y las otras buscadas?
+                return any(c in t.split() and all(w in t.split() for w in otras) for t in titulos) if otras else False
+            # Preferir: que aparezca junto a las otras palabras en un título real ('elden ring'),
+            # mismas letras en otro orden ('rign' -> 'ring'), misma primera letra, más parecida.
+            cerca.sort(key=lambda c: (not en_contexto(c), sorted(c) != sorted(p), c[0] != p[0],
+                                      -SequenceMatcher(None, p, c).ratio(), abs(len(c) - len(p))))
+            salida.append(cerca[0] if cerca else p)
+        else:
+            salida.append(p)
+    return " ".join(salida)
+
+
+def armar_vocabulario():
+    """Títulos populares de Steam y Nintendo (para el corrector)."""
+    titulos = []
+    for inicio in (0, 100, 200, 300, 400):
+        try:
+            url = "https://store.steampowered.com/search/results/?" + urllib.parse.urlencode({
+                "filter": "topsellers", "category1": 998, "cc": "AR", "l": "spanish",
+                "infinite": 1, "count": 100, "start": inicio,
+            })
+            titulos += re.findall(r'<span class="title">(.*?)</span>', http_json(url).get("results_html", ""))
+        except Exception as e:
+            print(f"[vocabulario steam] {type(e).__name__}: {e}", file=sys.stderr)
+    try:  # Nintendo: los 1000 más populares (la API entrega de a 500 como máximo)
+        datos = http_json(
+            f"https://{ALGOLIA_APP.lower()}-dsn.algolia.net/1/indexes/*/queries",
+            data={"requests": [{"indexName": "store_game_en_us", "query": "",
+                                "params": f"hitsPerPage=500&page={pag}&attributesToRetrieve=title"} for pag in (0, 1)]},
+            headers={"x-algolia-application-id": ALGOLIA_APP, "x-algolia-api-key": ALGOLIA_KEY},
+        )
+        titulos += [h.get("title", "") for r in datos["results"] for h in r.get("hits", [])]
+    except Exception as e:
+        print(f"[vocabulario nintendo] {type(e).__name__}: {e}", file=sys.stderr)
+    sumar_vocabulario(html.unescape(t) for t in titulos)
+
 
 def con_romanos(consulta):
     """'grand theft auto 6' -> 'grand theft auto VI' (algunas tiendas solo
@@ -144,7 +214,9 @@ def expandir_consulta(consulta):
         clave_ = re.sub(r"[^a-z0-9]", "", p.lower())
         m = re.fullmatch(r"([a-z]+)(\d+)", clave_)  # 're4', 'gta5', 'fh5'
         # No expandir si lo buscado ya trae el nombre completo ("Marvel's Spider-Man").
-        if clave_ in ALIAS and normalizar(ALIAS[clave_]).split()[0] in ya - {clave_}:
+        if i > 0 and clave_ in NUMEROS_ES:  # 'the witcher tres' -> 'the witcher 3'
+            salida.append(NUMEROS_ES[clave_])
+        elif clave_ in ALIAS and normalizar(ALIAS[clave_]).split()[0] in ya - {clave_}:
             salida.append(p)
         elif clave_ in ALIAS and (clave_ not in ("re", "ac", "mk", "ff", "kh") or i == 0):
             salida.append(ALIAS[clave_])
@@ -311,7 +383,7 @@ def buscar_steam(consulta, pais):
     for it in datos.get("items", []):
         if it.get("type") != "app":
             continue
-        if re.search(r"hentai|\b18\+|nsfw|uncensored", (it.get("name") or "").lower()):
+        if re.search(r"hentai|\b18\+|nsfw|uncensored|brothel|lewd", (it.get("name") or "").lower()):
             continue  # contenido adulto que aparece al buscar palabras comunes
         precio = it.get("price")
         if precio:
@@ -578,6 +650,51 @@ def cotizacion_dolar():
 # Mega descuentos
 # --------------------------------------------------------------------------
 
+# Géneros comunes a las tres tiendas (cada una los nombra distinto).
+GENEROS = {
+    "Acción": ("accion", "action"),
+    "Aventura": ("aventura", "adventure"),
+    "Rol": ("rol", "role playing", "rpg", "jrpg"),
+    "Estrategia": ("estrategia", "strategy"),
+    "Disparos": ("disparos", "shooter", "shooting", "fps"),
+    "Deportes": ("deportes", "sports"),
+    "Carreras": ("carreras", "racing", "conduccion"),
+    "Lucha": ("lucha", "fighting"),
+    "Plataformas": ("plataformas", "platformer"),
+    "Terror": ("terror", "horror"),
+    "Puzles": ("puzles", "puzzle"),
+    "Simulación": ("simulacion", "simulation"),
+    "Indie": ("indie",),
+    "Familiar": ("family", "familiar", "party", "fiesta", "kids"),
+}
+
+
+def generos_de(etiquetas):
+    salida = []
+    for genero, claves in GENEROS.items():
+        for e in etiquetas:
+            t = " " + normalizar(e) + " "
+            if any(f" {c} " in t for c in claves):
+                salida.append(genero)
+                break
+    return salida
+
+
+def _etiquetas_steam():
+    """{id de etiqueta de Steam: nombre}, para saber el género de cada juego."""
+    def traer():
+        return {d["tagid"]: d["name"] for d in http_json("https://store.steampowered.com/tagdata/populartags/spanish")}
+    return cacheado("etiquetas_steam", traer, ttl=24 * 3600)
+
+
+def _popularidad(items, clave, mayor_es_mejor=False):
+    """Pone en cada item 'pop' entre 0 (el más popular de su tienda) y 1."""
+    orden = sorted(items, key=lambda i: i.get(clave) or 0, reverse=mayor_es_mejor)
+    for n, i in enumerate(orden):
+        i["pop"] = round(n / max(1, len(orden) - 1), 3)
+        i.pop(clave, None)
+
+
 def _descuentos_steam(pais):
     """Los más vendidos de Steam que están en oferta (solo juegos)."""
     url = "https://store.steampowered.com/search/results/?" + urllib.parse.urlencode({
@@ -585,6 +702,10 @@ def _descuentos_steam(pais):
         "l": "spanish", "infinite": 1, "count": 100,
     })
     h = http_json(url).get("results_html", "")
+    try:
+        etiquetas = _etiquetas_steam()
+    except Exception:
+        etiquetas = {}
     items = []
     for fila in h.split('<a href="')[1:]:
         appid = re.search(r'data-ds-appid="(\d+)"', fila)
@@ -595,12 +716,16 @@ def _descuentos_steam(pais):
             continue
         pct = int(desc.group(1))
         precio = int(final.group(1)) / 100
+        tags = re.search(r'data-ds-tagids="\[([\d,]*)\]"', fila)
+        nombres = [etiquetas.get(int(t), "") for t in (tags.group(1).split(",") if tags and tags.group(1) else [])]
         items.append({
             "tienda": "Steam", "titulo": html.unescape(titulo.group(1)).strip(),
+            "generos": generos_de(nombres), "_rango": len(items),
             "precio": precio, "precio_original": round(precio / (1 - pct / 100), 2) if pct < 100 else None,
             "moneda": "USD" if pais == "AR" else "", "descuento": pct,
             "url": f"https://store.steampowered.com/app/{appid.group(1)}/",
         })
+    _popularidad(items, "_rango")  # vienen ordenados por más vendidos
     return items
 
 
@@ -627,7 +752,9 @@ def _descuentos_nintendo(pais, minimo):
         titulo = re.sub(r"\s+", " ", h_.get("title", "")).strip()
         if h_.get("platformCode") == "NINTENDO_SWITCH_2" and "switch 2" not in titulo.lower():
             titulo += " (Switch 2)"
-        juegos[nsuid] = {"titulo": titulo, "url": "https://www.nintendo.com" + (h_.get("url") or "")}
+        juegos[nsuid] = {"titulo": titulo, "url": "https://www.nintendo.com" + (h_.get("url") or ""),
+                         "generos": generos_de(h_.get("gameGenreLabels") or []),
+                         "_rango": h_.get("popularityRank") or 99999}
     salida = []
     regiones = [pais, "US"] if pais in NINTENDO_REFERENCIA_US else [pais]
     ids = list(juegos)
@@ -643,6 +770,7 @@ def _descuentos_nintendo(pais, minimo):
                     "precio_original": pr["precio_original"], "moneda": pr["moneda"],
                     "descuento": pct, "acepta_global": region == "US" and pais == "AR",
                 })
+    _popularidad(salida, "_rango")
     return salida
 
 
@@ -691,6 +819,7 @@ def _descuentos_xbox(titulos, pais):
             return []
     salida = []
     for productos in _pool_sub.map(lote, range(0, len(ids), 20)):
+        sumar_vocabulario((p.get("LocalizedProperties") or [{}])[0].get("ProductTitle", "") for p in productos)
         for prod in productos:
             if prod.get("ProductKind") != "Game":
                 continue
@@ -701,11 +830,18 @@ def _descuentos_xbox(titulos, pais):
             if lista_ <= 0 or msrp <= lista_:
                 continue
             titulo = (prod.get("LocalizedProperties") or [{}])[0].get("ProductTitle", "")
+            uso = {u.get("AggregateTimeSpan"): u.get("RatingCount") or 0
+                   for u in ((prod.get("MarketProperties") or [{}])[0].get("UsageData") or [])}
             salida.append({
                 "tienda": "Xbox", "titulo": titulo, "precio": lista_, "precio_original": msrp,
+                # 'Categories' a veces viene vacío y el género está solo en 'Category'
+                "generos": generos_de(((prod.get("Properties") or {}).get("Categories") or [])
+                                      + [(prod.get("Properties") or {}).get("Category") or ""]),
+                "_rango": uso.get("30Days", 0),
                 "moneda": pr.get("CurrencyCode", ""), "descuento": round((1 - lista_ / msrp) * 100),
                 "url": f"https://www.xbox.com/{locale}/games/store/x/{prod['ProductId']}",
             })
+    _popularidad(salida, "_rango", mayor_es_mejor=True)  # más calificaciones en 30 días = más jugado
     return salida
 
 
@@ -806,11 +942,26 @@ def buscar_todo(consulta, pais):
     original = consulta
     consulta = expandir_consulta(consulta)
 
+    corregido = [False]
+
     def hacer():
+        nonlocal consulta
         tareas = [_pool.submit(_seguro, nombre, f, consulta, pais) for nombre, f in BUSCADORES.items()]
         tiendas = []
         for t in tareas:
             tiendas.extend(t.result())
+
+        # Errores de tipeo: si nada coincide bien, probar con la búsqueda corregida.
+        juegos = detectar_juegos(tiendas)
+        if not juegos or juegos[0]["puntaje"] < 1.4:
+            corregida = corregir(consulta)
+            if corregida != normalizar(consulta):
+                nuevas = []
+                for lista in _pool.map(lambda n: _seguro(n, BUSCADORES[n], corregida, pais), BUSCADORES):
+                    nuevas.extend(lista)
+                consulta = corregida
+                corregido[0] = True
+                fusionar(tiendas, nuevas, consulta)
 
         # Segunda vuelta para no perder juegos que la búsqueda de una tienda escondió.
         extra = []  # (tienda, texto a buscar)
@@ -834,13 +985,15 @@ def buscar_todo(consulta, pais):
         if extra:
             for nuevas in _pool.map(lambda e: _seguro(e[0], BUSCADORES[e[0]], e[1], pais), extra):
                 fusionar(tiendas, nuevas, consulta)
-        return {"consulta": original, "buscado": consulta, "pais": pais, "tiendas": tiendas,
-                "juegos": detectar_juegos(tiendas)}
-    resultado = dict(cacheado(("buscar", normalizar(consulta), pais), hacer), consulta=original)
+        sumar_vocabulario(r["titulo"] for t in tiendas for r in t["resultados"])
+        return {"consulta": original, "buscado": consulta, "corregido": corregido[0], "pais": pais,
+                "tiendas": tiendas, "juegos": detectar_juegos(tiendas)}
+    clave_cache = ("buscar", normalizar(consulta), pais)
+    resultado = dict(cacheado(clave_cache, hacer), consulta=original)
     # No guardar en caché respuestas donde fallaron todas las tiendas.
     if not any(t["ok"] for t in resultado["tiendas"]):
         with _cache_lock:
-            _cache.pop(("buscar", normalizar(consulta), pais), None)
+            _cache.pop(clave_cache, None)
     return resultado
 
 
@@ -944,6 +1097,7 @@ details>summary::-webkit-details-marker{display:none}
 .jbody{padding:10px 12px 12px}
 .jbody .lista{border-radius:12px}
 .jacciones{display:flex;justify-content:flex-end;margin-bottom:8px}
+.corregido{font-size:.88rem;color:var(--sub);margin:2px 0 6px}
 .volver{background:none;color:var(--acento);border:none;padding:6px 0;margin-top:14px;font-weight:600;font-size:.95rem}
 .juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:6px}
 .juego h3{font-size:1.5rem;line-height:1.2;margin:0}
@@ -1003,6 +1157,8 @@ details>summary::-webkit-details-marker{display:none}
 .tab{background:none;color:var(--sub);border:none;border-bottom:2px solid transparent;border-radius:0;padding:10px 8px;font-weight:600}
 .tab.activa{color:var(--txt);border-bottom-color:var(--acento)}
 .filtros{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 8px}
+.filtros.desliza{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;margin-right:-16px;padding-right:16px}
+.filtros.desliza .chip{flex:none}
 .chip.activa{background:var(--acento);border-color:var(--acento);color:#fff}
 .ofertas{background:var(--card);border:1px solid var(--borde);border-radius:16px;overflow:hidden}
 .oferta{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--borde);cursor:pointer}
@@ -1194,6 +1350,7 @@ function alternarGuardado(clave) {
 }
 
 let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "50")), filtroTienda = leer("filtroTienda", "todas"), mostrarOfertas = 40;
+let ordenOfertas = leer("ordenOfertas", "descuento"), filtroGenero = leer("filtroGenero", "todos");
 
 function pintarInicio() {
   const tabs = `<div class="tabs"><button class="tab${vista === "mis" ? " activa" : ""}" data-vista="mis">⭐ Mis juegos${(n => n ? ` <span class="nuevo">🔥${n}</span>` : "")(biblioteca().filter(j => j.oferta).length)}</button>
@@ -1213,20 +1370,28 @@ function pintarOfertas() {
   if (ofertas.cargando) return '<div class="cargando">Buscando ofertas…</div>';
   if (ofertas.error) return '<div class="vacio error">No se pudieron cargar las ofertas. Probá de nuevo en un rato.</div>';
   const tiendas = [...new Set(ofertas.items.map(i => i.tienda))];
-  const lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda));
+  // Géneros presentes, de más a menos ofertas
+  const cuenta = {};
+  for (const i of ofertas.items) for (const g of i.generos || []) cuenta[g] = (cuenta[g] || 0) + 1;
+  const generos = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a]);
+  let lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda)
+    && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero)));
+  if (ordenOfertas === "populares") lista = [...lista].sort((a, b) => (a.pop ?? 1) - (b.pop ?? 1) || b.descuento - a.descuento);
   const chip = (attr, val, actual, texto) => `<button class="chip${val == actual ? " activa" : ""}" ${attr}="${esc(val)}">${esc(texto)}</button>`;
-  return `<div class="filtros">${[50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}% o más`)).join("")}</div>
-    <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
+  return `<div class="filtros">${chip("data-orden", "descuento", ordenOfertas, "🔥 Mayor descuento")}${chip("data-orden", "populares", ordenOfertas, "⭐ Más vendidos")}</div>
+    <div class="filtros">${[50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}% o más`)).join("")}</div>
+    <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas las tiendas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
+    <div class="filtros desliza">${chip("data-genero", "todos", filtroGenero, "Todos los géneros")}${generos.map(g => chip("data-genero", g, filtroGenero, g)).join("")}</div>
     ${lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
       const c = calcular(i);
       return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
         <span class="pct">-${i.descuento}%</span>
-        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}</div></span>
+        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div></span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
     : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
-    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se revisan los juegos del catálogo de Game Pass (incluye los exclusivos) y los que están en oferta en otras tiendas.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. "Más vendidos": según los más vendidos de Steam, el ranking de popularidad de Nintendo y los más jugados de Xbox. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se revisan los juegos del catálogo de Game Pass (incluye los exclusivos) y los que están en oferta en otras tiendas.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
 }
 
 function pintarBiblioteca() {
@@ -1319,7 +1484,12 @@ let abiertos = new Set();  // juegos desplegados en la lista de resultados
 
 function pintar() {
   const res = $("#res");
-  if (!ultimo) { res.innerHTML = pintarInicio(); return }
+  if (!ultimo) {
+    res.innerHTML = pintarInicio();
+    const g = res.querySelector(".desliza .chip.activa");  // que el género elegido quede a la vista
+    if (g) g.parentElement.scrollLeft = g.offsetLeft - 16;
+    return;
+  }
   if (ultimo.cargando) { res.innerHTML = '<div class="cargando">Buscando en las tiendas…</div>'; return }
   const volver = '<button class="volver" id="volver">← Volver</button>';
   if (ultimo.error) { res.innerHTML = volver + `<div class="vacio error">${esc(ultimo.error)}</div>`; return }
@@ -1329,6 +1499,7 @@ function pintar() {
   }
   const conImp = esAR() && $("#imp").value !== "0";
   let html = volver;
+  if (ultimo.corregido) html += `<div class="corregido">Mostrando resultados para <b>${esc(ultimo.buscado)}</b></div>`;
   if (ultimo.juegos.length === 1) {
     const g = ultimo.juegos[0];
     html += `<div class="juego"><h3>${esc(g.titulo)}</h3>${botonGuardar(g.clave)}</div>
@@ -1369,10 +1540,12 @@ $("#res").addEventListener("toggle", e => {
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],#actualizarTodo,#masOfertas,#volver");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],[data-orden],[data-genero],#actualizarTodo,#masOfertas,#volver");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
+  else if (el.dataset.orden) { ordenOfertas = el.dataset.orden; guardar("ordenOfertas", ordenOfertas); mostrarOfertas = 40; pintar() }
+  else if (el.dataset.genero) { filtroGenero = el.dataset.genero; guardar("filtroGenero", filtroGenero); mostrarOfertas = 40; pintar() }
   else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
   else if (el.id === "masOfertas") { mostrarOfertas += 40; pintar() }
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar, false, el.dataset.clave) }
@@ -1458,7 +1631,12 @@ class Manejador(BaseHTTPRequestHandler):
 
 def precalentar_descuentos():
     """Arma la lista de ofertas apenas arranca el servidor y la renueva cada hora,
-    para que la pestaña Mega descuentos abra rápido."""
+    para que la pestaña Mega descuentos abra rápido. También arma el vocabulario
+    del corrector de errores de tipeo."""
+    try:
+        armar_vocabulario()
+    except Exception as e:
+        print(f"[vocabulario] {type(e).__name__}: {e}", file=sys.stderr)
     while True:
         try:
             with _cache_lock:
