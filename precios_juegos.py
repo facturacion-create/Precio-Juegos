@@ -362,6 +362,30 @@ def describir_error(e):
 # Steam
 # --------------------------------------------------------------------------
 
+# ---- Portadas ----
+def portada_steam(appid):
+    u = f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/header.jpg"
+    return u, u  # (banner, miniatura)
+
+
+def portada_xbox(prod):
+    imgs = {}
+    for im in (prod.get("LocalizedProperties") or [{}])[0].get("Images") or []:
+        imgs.setdefault(im.get("ImagePurpose"), "https:" + im["Uri"] if im.get("Uri", "").startswith("//") else im.get("Uri"))
+    banner = imgs.get("TitledHeroArt") or imgs.get("SuperHeroArt") or imgs.get("BoxArt") or imgs.get("Poster")
+    mini = imgs.get("BoxArt") or imgs.get("FeaturePromotionalSquareArt") or imgs.get("Poster") or banner
+    return (banner + "?w=800" if banner else None), (mini + "?w=160&h=160" if mini else None)
+
+
+def portada_nintendo(hit):
+    img, cuadrada = hit.get("productImage"), hit.get("productImageSquare")
+    banner = f"https://assets.nintendo.com/image/upload/ar_16:9,c_fill,w_800/f_auto/q_auto/{img}" if img else None
+    if cuadrada and not cuadrada.startswith("http"):
+        cuadrada = f"https://assets.nintendo.com/image/upload/c_fill,w_160,h_160/f_auto/q_auto/{cuadrada}"
+    mini = cuadrada or (f"https://assets.nintendo.com/image/upload/c_fill,w_160,h_160/f_auto/q_auto/{img}" if img else None)
+    return banner, mini
+
+
 def _steam_tipo(appid):
     """'game', 'dlc', 'music', 'demo'... (o None si no se pudo saber)."""
     def traer():
@@ -400,7 +424,7 @@ def buscar_steam(consulta, pais):
             "moneda": moneda,
             "gratis": not precio,
             "url": f"https://store.steampowered.com/app/{it.get('id')}/",
-            "imagen": it.get("tiny_image"),
+            "imagen": portada_steam(it.get("id"))[0], "mini": portada_steam(it.get("id"))[1],
             "_id": it.get("id"),
         })
     # Steam no dice en la búsqueda si algo es juego o DLC: se consulta aparte.
@@ -512,6 +536,7 @@ def buscar_xbox(consulta, pais):
         solo_pc = "Windows.Xbox" not in plat and "Windows.Desktop" in plat
         items.append({
             "titulo": titulo + (" (solo PC)" if solo_pc else ""),
+            "imagen": portada_xbox(prod)[0], "mini": portada_xbox(prod)[1],
             "_es_juego": True,  # Microsoft dice que es un juego (ProductKind = Game), aunque se llame "Lote"
             "precio": lista,
             "precio_original": msrp if msrp > lista else None,
@@ -555,6 +580,7 @@ def _nintendo_buscar(consulta):
         juegos.append({
             "nsuid": nsuid,
             "titulo": titulo,
+            "imagen": portada_nintendo(h)[0], "mini": portada_nintendo(h)[1],
             "url": "https://www.nintendo.com" + (h.get("url") or ""),
             "_tipo": "extra" if dlc and dlc != "ROM Bundle" else None,
         })
@@ -601,6 +627,7 @@ def buscar_nintendo(consulta, pais):
                 pr = precios[j["nsuid"]]
                 items.append({
                     "titulo": j["titulo"], "url": j["url"], "puntaje": j["puntaje"],
+                    "imagen": j.get("imagen"), "mini": j.get("mini"),
                     "clave": j["clave"], "tipo": j["tipo"],
                     "gratis": pr["precio"] == 0, **pr,
                 })
@@ -721,6 +748,7 @@ def _descuentos_steam(pais):
         items.append({
             "tienda": "Steam", "titulo": html.unescape(titulo.group(1)).strip(),
             "generos": generos_de(nombres), "_rango": len(items),
+            "mini": portada_steam(appid.group(1))[1],
             "precio": precio, "precio_original": round(precio / (1 - pct / 100), 2) if pct < 100 else None,
             "moneda": "USD" if pais == "AR" else "", "descuento": pct,
             "url": f"https://store.steampowered.com/app/{appid.group(1)}/",
@@ -754,6 +782,7 @@ def _descuentos_nintendo(pais, minimo):
             titulo += " (Switch 2)"
         juegos[nsuid] = {"titulo": titulo, "url": "https://www.nintendo.com" + (h_.get("url") or ""),
                          "generos": generos_de(h_.get("gameGenreLabels") or []),
+                         "mini": portada_nintendo(h_)[1],
                          "_rango": h_.get("popularityRank") or 99999}
     salida = []
     regiones = [pais, "US"] if pais in NINTENDO_REFERENCIA_US else [pais]
@@ -835,6 +864,7 @@ def _descuentos_xbox(titulos, pais):
             salida.append({
                 "tienda": "Xbox", "titulo": titulo, "precio": lista_, "precio_original": msrp,
                 # 'Categories' a veces viene vacío y el género está solo en 'Category'
+                "mini": portada_xbox(prod)[1],
                 "generos": generos_de(((prod.get("Properties") or {}).get("Categories") or [])
                                       + [(prod.get("Properties") or {}).get("Category") or ""]),
                 "_rango": uso.get("30Days", 0),
@@ -896,7 +926,11 @@ def detectar_juegos(tiendas):
         for it in t["resultados"]:
             if it.get("tipo") == "extra" or it["puntaje"] < PUNTAJE_MINIMO:
                 continue
-            g = grupos.setdefault(it["clave"], {"clave": it["clave"], "puntaje": 0, "tiendas": set(), "titulos": [], "pago": False})
+            g = grupos.setdefault(it["clave"], {"clave": it["clave"], "puntaje": 0, "tiendas": set(), "titulos": [],
+                                                "pago": False, "imagenes": []})
+            if it.get("imagen"):
+                # Preferir la portada del juego base antes que la de una edición
+                g["imagenes"].append((it.get("tipo") != "juego", it["imagen"], it.get("mini") or it["imagen"]))
             g["puntaje"] = max(g["puntaje"], it["puntaje"])
             g["pago"] = g["pago"] or it["precio"] > 0
             g["tiendas"].add(t["tienda"])
@@ -906,8 +940,9 @@ def detectar_juegos(tiendas):
         # Nombre para mostrar: el del juego base más corto (sin edición ni plataforma).
         titulo = min(g["titulos"])[2]
         titulo = re.sub(r"\s*\((Switch 2|solo PC)\)$", "", titulo)
+        img = min(g["imagenes"]) if g["imagenes"] else (False, None, None)
         salida.append({"clave": g["clave"], "titulo": titulo, "puntaje": g["puntaje"],
-                       "n": len(g["tiendas"]), "_pago": g["pago"]})
+                       "n": len(g["tiendas"]), "_pago": g["pago"], "imagen": img[1], "mini": img[2]})
     # Un juego que está en varias tiendas es más probablemente el que se buscó.
     salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.2 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
@@ -1098,6 +1133,13 @@ details>summary::-webkit-details-marker{display:none}
 .jbody .lista{border-radius:12px}
 .jacciones{display:flex;justify-content:flex-end;margin-bottom:8px}
 .corregido{font-size:.88rem;color:var(--sub);margin:2px 0 6px}
+.portada{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:16px;margin:6px 0 10px;background:var(--borde)}
+.portada.chica{border-radius:12px;margin-top:0;aspect-ratio:21/8}
+.mini{flex:none;width:48px;height:48px;object-fit:cover;border-radius:10px;background:var(--borde)}
+.mini-wrap{position:relative;flex:none;display:flex}
+.mini-wrap .mini{width:56px;height:56px}
+.mini-wrap .pct{position:absolute;left:-6px;bottom:-6px;min-width:0;font-size:.7rem;padding:2px 5px;border-radius:7px}
+.mini-wrap .mini[style*="none"] + .pct{position:static}
 .volver{background:none;color:var(--acento);border:none;padding:6px 0;margin-top:14px;font-weight:600;font-size:.95rem}
 .juego{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:6px}
 .juego h3{font-size:1.5rem;line-height:1.2;margin:0}
@@ -1222,6 +1264,8 @@ function fmt(valor, moneda) {
   try { return new Intl.NumberFormat("es-AR", {style: "currency", currency: moneda || "USD", maximumFractionDigits: moneda === "ARS" && valor >= 1000 ? 0 : 2}).format(valor) }
   catch { return (moneda || "") + " " + valor.toFixed(2) }
 }
+// Imagen que se oculta sola si no carga (algunas tiendas no tienen portada para todo).
+const img = (src, cls) => src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : "";
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])) }
 
 /* ---------- Dólar y ajustes ---------- */
@@ -1333,6 +1377,8 @@ function actualizarEnBiblioteca(datos, clave) {
   const m = mejorOpcion(datos, clave);
   if (m && (!j.mejor || Math.round(m.valor) !== Math.round(j.mejor.valor))) j.anterior = j.mejor;
   if (m) j.mejor = m;
+  const g = (datos.juegos || []).find(g => g.clave === clave);
+  if (g && g.mini) j.mini = g.mini;
   const o = mejorOferta(datos, clave);
   // "nueva" = la oferta no estaba la última vez que se revisó (para resaltarla)
   if (o) o.nueva = !j.oferta || j.oferta.tienda !== o.tienda || j.oferta.pct !== o.pct || !!j.oferta.nueva;
@@ -1345,7 +1391,7 @@ function alternarGuardado(clave) {
   const g = ultimo.juegos.find(g => g.clave === clave);
   let b = biblioteca();
   if (enBiblioteca(clave)) b = b.filter(j => !(j.clave === clave && j.pais === $("#pais").value));
-  else b.unshift({clave, titulo: g.titulo, pais: $("#pais").value, mejor: mejorOpcion(ultimo, clave), oferta: mejorOferta(ultimo, clave), fecha: Date.now()});
+  else b.unshift({clave, titulo: g.titulo, mini: g.mini, pais: $("#pais").value, mejor: mejorOpcion(ultimo, clave), oferta: mejorOferta(ultimo, clave), fecha: Date.now()});
   guardarBiblioteca(b); pintar();
 }
 
@@ -1385,7 +1431,7 @@ function pintarOfertas() {
     ${lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
       const c = calcular(i);
       return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
-        <span class="pct">-${i.descuento}%</span>
+        <span class="mini-wrap">${img(i.mini, "mini")}<span class="pct">-${i.descuento}%</span></span>
         <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div></span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
@@ -1404,7 +1450,7 @@ function pintarBiblioteca() {
       cambio = `<small class="${dif < 0 ? "baja" : "sube"}">${dif < 0 ? "▼ bajó" : "▲ subió"} ${fmt(Math.abs(dif), j.mejor.moneda)}</small>`;
     }
     const f = new Date(j.fecha).toLocaleDateString("es-AR", {day: "numeric", month: "short"});
-    return `<div class="bib-item">
+    return `<div class="bib-item">${img(j.mini, "mini")}
       <div class="info" data-buscar="${esc(j.titulo)}" data-clave="${esc(j.clave)}" data-pais="${esc(j.pais)}"><div class="nom">${esc(j.titulo)}</div>
         <div class="sub">${j.oferta ? `<span class="enoferta">🔥 -${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span>` : j.mejor ? `Más barato en ${esc(j.mejor.tienda)}` : "Sin precio"} · ${f}${j.pais !== "AR" ? " · " + esc(PAISES[j.pais]?.nombre || j.pais) : ""}</div></div>
       <div class="p">${j.mejor ? fmt(j.mejor.valor, j.mejor.moneda) : "—"}${cambio}</div>
@@ -1441,7 +1487,7 @@ function pintarAlertas() {
   const enOferta = biblioteca().filter(j => j.oferta && j.pais === $("#pais").value);
   if (!enOferta.length) return "";
   return `<div class="alerta"><b>🔥 ${enOferta.length === 1 ? "Un juego de tu lista está" : enOferta.length + " juegos de tu lista están"} en oferta</b>${enOferta.map(j =>
-    `<div class="alerta-item" data-buscar="${esc(j.titulo)}" data-clave="${esc(j.clave)}" data-pais="${esc(j.pais)}"><span>${esc(j.titulo)}${j.oferta.nueva ? ' <span class="nuevo">NUEVO</span>' : ""}<span class="t">-${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span></span><span class="p">${fmt(j.oferta.valor, j.oferta.moneda)}</span></div>`).join("")}</div>`;
+    `<div class="alerta-item" data-buscar="${esc(j.titulo)}" data-clave="${esc(j.clave)}" data-pais="${esc(j.pais)}">${img(j.mini, "mini")}<span style="flex:1">${esc(j.titulo)}${j.oferta.nueva ? ' <span class="nuevo">NUEVO</span>' : ""}<span class="t">-${j.oferta.pct}% en ${esc(j.oferta.tienda)}</span></span><span class="p">${fmt(j.oferta.valor, j.oferta.moneda)}</span></div>`).join("")}</div>`;
 }
 
 // Cuando abrís un juego en oferta, deja de marcarse como "NUEVO".
@@ -1502,7 +1548,7 @@ function pintar() {
   if (ultimo.corregido) html += `<div class="corregido">Mostrando resultados para <b>${esc(ultimo.buscado)}</b></div>`;
   if (ultimo.juegos.length === 1) {
     const g = ultimo.juegos[0];
-    html += `<div class="juego"><h3>${esc(g.titulo)}</h3>${botonGuardar(g.clave)}</div>
+    html += `${img(g.imagen, "portada")}<div class="juego"><h3>${esc(g.titulo)}</h3>${botonGuardar(g.clave)}</div>
       <h2>Lo que pagarías${conImp ? " (con impuestos)" : ""}</h2>${pintarDetalle(g)}`;
   } else {
     // Varios juegos (una saga, nombres parecidos): todos a la vista con su precio más barato.
@@ -1511,8 +1557,8 @@ function pintar() {
       const m = mejorOpcion(ultimo, g.clave), o = mejorOferta(ultimo, g.clave);
       const precio = m ? `<span class="jprecio">${fmt(m.valor, m.moneda)}<small>${o && o.tienda === m.tienda ? `-${o.pct}% · ` : ""}${esc(m.tienda)}</small></span>` : `<span class="jprecio"><small>sin precio</small></span>`;
       return `<details class="jcard" data-clave="${esc(g.clave)}"${abiertos.has(g.clave) ? " open" : ""}>
-        <summary><span class="jtit">${esc(g.titulo)}${enBiblioteca(g.clave) ? " ★" : ""}</span>${precio}</summary>
-        <div class="jbody"><div class="jacciones">${botonGuardar(g.clave)}</div>${pintarDetalle(g)}</div></details>`;
+        <summary>${img(g.mini, "mini")}<span class="jtit">${esc(g.titulo)}${enBiblioteca(g.clave) ? " ★" : ""}</span>${precio}</summary>
+        <div class="jbody">${img(g.imagen, "portada chica")}<div class="jacciones">${botonGuardar(g.clave)}</div>${pintarDetalle(g)}</div></details>`;
     }).join("");
   }
   res.innerHTML = html;
