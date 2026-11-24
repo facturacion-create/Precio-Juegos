@@ -450,8 +450,10 @@ def _steam_tipo(appid):
 
 
 def buscar_steam(consulta, pais):
+    # Steam toma ' - ' como "excluir esta palabra": 'Movierooms - Cinema Management' no encontraba nada.
+    termino = re.sub(r"\s+[-–—]+\s+|[™®©:]", " ", consulta).strip()
     url = "https://store.steampowered.com/api/storesearch/?" + urllib.parse.urlencode(
-        {"term": consulta, "cc": pais, "l": "spanish"}
+        {"term": termino, "cc": pais, "l": "spanish"}
     )
     datos = http_json(url)
     items = []
