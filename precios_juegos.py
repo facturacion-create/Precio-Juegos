@@ -138,15 +138,19 @@ NUMEROS_ES = {"uno": "1", "dos": "2", "tres": "3", "cuatro": "4", "cinco": "5", 
 # Se llena con los más vendidos de Steam, el catálogo de Nintendo y de Game Pass, y cada búsqueda.
 _vocabulario = set()
 _titulos_conocidos = set()  # títulos normalizados, para corregir según el contexto
+_titulos_originales = {}    # normalizado -> título como lo escribe la tienda (para autocompletar)
 _vocab_lock = threading.Lock()
 
 
 def sumar_vocabulario(titulos):
-    norm = {normalizar(t) for t in titulos if t}
+    titulos = [t for t in titulos if t]
+    norm = {normalizar(t) for t in titulos}
     nuevas = {p for t in norm for p in t.split() if len(p) >= 3 and not p.isdigit()}
     with _vocab_lock:
         _vocabulario.update(nuevas)
         _titulos_conocidos.update(norm)
+        for t in titulos:
+            _titulos_originales.setdefault(normalizar(t), t)
 
 
 def corregir(consulta):
@@ -242,6 +246,38 @@ EDICIONES = (
 )
 
 
+# Palabras que describen una edición (no son parte del nombre del juego)
+PALABRAS_EDICION = {
+    "edition", "edicion", "deluxe", "digital", "ultimate", "complete", "completa", "standard", "estandar",
+    "gold", "premium", "definitive", "definitiva", "anniversary", "aniversario", "special", "especial",
+    "royal", "legendary", "launch", "lanzamiento", "collector", "collectors", "coleccionista", "cut",
+    "director", "directors", "goty", "year", "game", "of", "the", "enhanced", "remastered", "bundle",
+    "for", "para",
+}
+
+
+def _sacar_descriptores(palabras):
+    """['the','ivalice','chronicles','deluxe','edition'] -> ['the','ivalice','chronicles'];
+    ['refantazio','atlus','35th','anniversary','edition'] -> ['refantazio']."""
+    palabras = list(palabras)
+    sacadas_numero = False
+    plataformas = {"nintendo", "switch", "xbox", "series", "one", "windows", "pc", "ps4", "ps5"}
+    while palabras:
+        ultima = re.sub(r"[™®]", "", palabras[-1].lower())
+        if ultima == "2" and len(palabras) > 1 and palabras[-2].lower().startswith("switch"):
+            palabras.pop()  # 'Nintendo Switch 2 Edition'
+        elif ultima in PALABRAS_EDICION or ultima in plataformas:
+            palabras.pop()
+        elif re.search(r"\d", ultima) and re.search(r"(st|nd|rd|th)$", ultima):
+            sacadas_numero = True  # '35th'
+            palabras.pop()
+        else:
+            break
+    if sacadas_numero and len(palabras) > 1:  # 'Atlus 35th Anniversary': también la marca
+        palabras.pop()
+    return palabras
+
+
 _SEPARADOR = re.compile(r"\s*(?:[:\u2013\u2014]|\s-\s)\s*")
 
 
@@ -262,12 +298,15 @@ def sin_edicion(titulo):
         if len(partes) > 1 and any(e in normalizar(partes[-1]) for e in EDICIONES):
             ultimo = list(_SEPARADOR.finditer(t))[-1]
             parte = partes[-1]
-            # 'ReFantazio Atlus 35th Anniversary Edition': sacar solo la edición
-            # (hasta 3 palabras antes de 'Edition') y conservar el subtítulo real.
-            resto = re.sub(r"(?:\s*\S+){0,3}\s*\b(edition|[eé]dici[oó]n)\b.*$", "", parte, flags=re.I).strip()
+            # 'The Ivalice Chronicles Deluxe Edition': sacar solo las palabras de la
+            # edición y conservar el subtítulo real ('The Ivalice Chronicles').
+            # cada palabra original con su versión normalizada (los símbolos como '&' no cuentan)
+            tokens = [(o, normalizar(o)) for o in parte.split() if normalizar(o)]
+            sin_tildes = [n for _, n in tokens]
+            quedan = _sacar_descriptores(sin_tildes)
             empieza_con_edicion = any(normalizar(parte).startswith(e) for e in EDICIONES)
-            if resto and not empieza_con_edicion and resto != parte:
-                t = t[:ultimo.end()] + resto
+            if quedan and not empieza_con_edicion and len(quedan) < len(sin_tildes):
+                t = t[:ultimo.end()] + " ".join(o for o, _ in tokens[:len(quedan)])
             else:
                 t = t[:ultimo.start()]
         if t == antes or not t:
@@ -285,7 +324,12 @@ def clave(titulo):
     t = re.sub(r"^(edicion \w+|version) de ", "", t)  # 'Edición definitiva de X', 'Versión de X'
     t = re.sub(r"\s+para xbox (one|series x s|series)$", "", t)
     t = re.sub(r"(\s+(para|for) (windows|pc|xbox)\b.*)$", "", t)
-    t = re.sub(r"(\s+\w+)?\s+(edition|edicion)$", "", t)  # 'X Tarnished Edition'
+    if re.search(r"\b(edition|edicion)\b", t):  # 'X Digital Deluxe Edition' (sin separador)
+        palabras = t.split()
+        quedan = _sacar_descriptores(palabras)
+        if len(palabras) - len(quedan) <= 1:  # 'ELDEN RING Tarnished Edition': una palabra suelta antes de 'Edition'
+            quedan = re.sub(r"(\s+\w+)?\s+(edition|edicion)$", "", t).split()
+        t = " ".join(quedan) or t
     t = re.sub(r"\s+edicion \w+$", "", t)  # 'X Edición Deluxe'
     return t.strip() or normalizar(titulo)
 
@@ -568,7 +612,7 @@ def _nintendo_buscar(consulta):
         data={"requests": [{
             "indexName": "store_game_en_us",
             "query": consulta,
-            "params": "hitsPerPage=15",
+            "params": "hitsPerPage=40",
         }]},
         headers={"x-algolia-application-id": ALGOLIA_APP, "x-algolia-api-key": ALGOLIA_KEY},
     )
@@ -614,10 +658,10 @@ def _nintendo_precios(nsuids, pais):
 
 
 def buscar_nintendo(consulta, pais):
-    juegos = preparar(consulta, _nintendo_buscar(consulta))[:12]
+    juegos = preparar(consulta, _nintendo_buscar(consulta))[:40]
     if not juegos:
         return [resultado_tienda("Nintendo eShop")]
-    nsuids = [j["nsuid"] for j in juegos]
+    nsuids = [j["nsuid"] for j in juegos][:50]
 
     salida = []
     paises = [pais]
@@ -1183,7 +1227,52 @@ def detectar_juegos(tiendas):
     salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.2 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
         g.pop("_pago")
-    return salida[:12]
+    return salida[:30]
+
+
+def sugerencias(texto, pais="AR"):
+    """Hasta 8 nombres de juegos para autocompletar mientras se escribe.
+    Usa la búsqueda de Nintendo y la de Steam (rápidas y toleran errores) y los
+    títulos que la app ya conoce."""
+    q = normalizar(texto)
+    if len(q) < 2:
+        return []
+
+    def nintendo():
+        datos = http_json(
+            f"https://{ALGOLIA_APP.lower()}-dsn.algolia.net/1/indexes/*/queries",
+            data={"requests": [{"indexName": "store_game_en_us", "query": texto,
+                                "params": "hitsPerPage=10&attributesToRetrieve=title,dlcType"}]},
+            headers={"x-algolia-application-id": ALGOLIA_APP, "x-algolia-api-key": ALGOLIA_KEY})
+        return [h["title"] for h in datos["results"][0].get("hits", []) if not h.get("dlcType") or h.get("dlcType") == "ROM Bundle"]
+
+    def steam():
+        url = "https://store.steampowered.com/search/suggest?" + urllib.parse.urlencode(
+            {"term": texto, "f": "games", "cc": pais, "l": "spanish", "realm": 1})
+        return [html.unescape(t) for t in re.findall(r'<div class="match_name">(.*?)</div>', http_texto(url))]
+
+    def traer():
+        nombres = []
+        for f in (steam, nintendo):
+            try:
+                nombres += f()
+            except Exception:
+                pass
+        with _vocab_lock:
+            conocidos = [t for n, t in _titulos_originales.items() if q in n][:30]
+        nombres += conocidos
+        vistos, salida = set(), []
+        for n in nombres:
+            n = re.sub(r"\s*\((Switch 2|solo PC)\)$|[™®]", "", n).strip()
+            c = clave(n)
+            if not n or c in vistos or es_extra_por_nombre(n):
+                continue
+            vistos.add(c)
+            salida.append(n)
+        # Primero los que empiezan con lo escrito, después los que lo contienen
+        salida.sort(key=lambda n: (not normalizar(n).startswith(q), q not in normalizar(n), len(n)))
+        return salida[:8]
+    return cacheado(("sugerir", q, pais), traer, ttl=30 * 60)
 
 
 BUSCADORES = {"Steam": buscar_steam, "Xbox": buscar_xbox, "Nintendo eShop": buscar_nintendo}
@@ -1341,7 +1430,11 @@ h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--sub
 a{color:inherit}
 form{display:flex;gap:8px}
 input,select,button{font:inherit;border-radius:12px;border:1px solid var(--borde);background:var(--card);color:var(--txt);padding:12px}
-input{flex:1;min-width:0}
+input{flex:1;min-width:0;width:100%}
+.campo{position:relative;flex:1;min-width:0;display:flex}
+.sugerencias{position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--borde);border-radius:12px;z-index:20;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.sug{display:block;width:100%;text-align:left;background:none;color:var(--txt);border:none;border-bottom:1px solid var(--borde);border-radius:0;padding:11px 12px;font-weight:400;font-size:.95rem}
+.sug:last-child{border-bottom:none}
 button{background:var(--acento);color:#fff;border:none;font-weight:600;cursor:pointer}
 button.sec{background:var(--card);color:var(--acento);border:1px solid var(--borde);padding:8px 12px;font-size:.9rem}
 details>summary{cursor:pointer;list-style:none}
@@ -1466,7 +1559,10 @@ details>summary::-webkit-details-marker{display:none}
 <main>
 <h1>🎮 Precios de Juegos</h1>
 <form id="f">
-  <input id="q" type="search" placeholder="¿Qué juego buscás?" autocomplete="off" enterkeyhint="search" required>
+  <div class="campo">
+    <input id="q" type="search" placeholder="¿Qué juego buscás?" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" required>
+    <div id="sug" class="sugerencias" hidden></div>
+  </div>
   <button type="submit">Buscar</button>
 </form>
 <details class="ajustes" id="ajustes">
@@ -1806,6 +1902,7 @@ function pintarDetalle(g) {
 
 const botonGuardar = clave => `<button class="sec guardar" data-guardar="${esc(clave)}">${enBiblioteca(clave) ? "★ Guardado" : "☆ Guardar"}</button>`;
 let abiertos = new Set();  // juegos desplegados en la lista de resultados
+let verTodos = false;
 
 function pintar() {
   const res = $("#res");
@@ -1832,13 +1929,15 @@ function pintar() {
   } else {
     // Varios juegos (una saga, nombres parecidos): todos a la vista con su precio más barato.
     if (!abiertos.size) abiertos.add(ultimo.juegos[0].clave);
-    html += `<h2>Encontré ${ultimo.juegos.length} juegos${conImp ? " · precios con impuestos" : ""}</h2>` + ultimo.juegos.map(g => {
+    const visibles = verTodos ? ultimo.juegos : ultimo.juegos.slice(0, 12);
+    html += `<h2>Encontré ${ultimo.juegos.length} juegos${conImp ? " · precios con impuestos" : ""}</h2>` + visibles.map(g => {
       const m = mejorOpcion(ultimo, g.clave), o = mejorOferta(ultimo, g.clave);
       const precio = m ? `<span class="jprecio">${fmt(m.valor, m.moneda)}<small>${o && o.tienda === m.tienda ? `-${o.pct}% · ` : ""}${esc(m.tienda)}</small></span>` : `<span class="jprecio"><small>sin precio</small></span>`;
       return `<details class="jcard" data-clave="${esc(g.clave)}"${abiertos.has(g.clave) ? " open" : ""}>
         <summary>${img(g.mini, "mini")}<span class="jtit">${esc(g.titulo)}${enBiblioteca(g.clave) ? " ★" : ""}</span>${precio}</summary>
         <div class="jbody">${img(g.imagen, "portada chica")}<div class="jacciones">${botonGuardar(g.clave)}</div>${pintarDetalle(g)}</div></details>`;
     }).join("");
+    if (visibles.length < ultimo.juegos.length) html += `<div class="acciones"><span></span><button class="sec" id="verTodos">Ver todos (${ultimo.juegos.length})</button></div>`;
   }
   res.innerHTML = html;
   for (const g of ultimo.juegos) if (enBiblioteca(g.clave)) { actualizarEnBiblioteca(ultimo, g.clave); marcarVista(g.clave) }
@@ -1851,7 +1950,7 @@ async function buscar(q, desdeHistorial, abrir) {
   // Guardar en el historial, así el gesto/botón "atrás" del celular vuelve al inicio.
   if (!desdeHistorial) { try { history.pushState({q}, "", "#" + encodeURIComponent(q)) } catch {} }
   $("#q").value = q; $("#q").blur();
-  ultimo = {cargando: true}; abiertos = new Set(abrir ? [abrir] : []); pintar();
+  ultimo = {cargando: true}; abiertos = new Set(abrir ? [abrir] : []); verTodos = false; ocultarSugerencias(); pintar();
   try {
     const r = await fetch(`/api/buscar?q=${encodeURIComponent(q)}&pais=${$("#pais").value}`);
     ultimo = await r.json();
@@ -1874,9 +1973,34 @@ $("#res").addEventListener("toggle", e => {
   if (c && e.target === c) c.open ? abiertos.add(c.dataset.clave) : abiertos.delete(c.dataset.clave);
 }, true);
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
-$("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
+$("#q").addEventListener("input", () => {
+  if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() }
+  pedirSugerencias();
+});
+/* ---------- Autocompletar ---------- */
+let timerSug = null, pedidoSug = 0;
+function ocultarSugerencias() { $("#sug").hidden = true; $("#sug").innerHTML = "" }
+function pedirSugerencias() {
+  clearTimeout(timerSug);
+  const q = $("#q").value.trim();
+  if (q.length < 2) { ocultarSugerencias(); return }
+  timerSug = setTimeout(async () => {
+    const n = ++pedidoSug;
+    try {
+      const r = await (await fetch(`/api/sugerir?q=${encodeURIComponent(q)}`)).json();
+      if (n !== pedidoSug || document.activeElement !== $("#q")) return;  // llegó tarde o ya se buscó
+      const lista = r.sugerencias || [];
+      if (!lista.length) { ocultarSugerencias(); return }
+      $("#sug").innerHTML = lista.map(t => `<button type="button" class="sug" data-sug="${esc(t)}">${esc(t)}</button>`).join("");
+      $("#sug").hidden = false;
+    } catch {}
+  }, 250);
+}
+$("#sug").addEventListener("pointerdown", e => e.preventDefault());  // que el campo no pierda el foco antes del toque
+$("#sug").addEventListener("click", e => { const b = e.target.closest("[data-sug]"); if (b) buscar(b.dataset.sug) });
+$("#q").addEventListener("blur", () => setTimeout(ocultarSugerencias, 150));
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros,#verTodos");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
@@ -1884,6 +2008,7 @@ $("#res").addEventListener("click", e => {
   else if (el.dataset.orden) { ordenOfertas = el.dataset.orden; guardar("ordenOfertas", ordenOfertas); mostrarOfertas = 40; pintar() }
   else if (el.dataset.genero) { filtroGenero = el.dataset.genero; guardar("filtroGenero", filtroGenero); mostrarOfertas = 40; pintar() }
   else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
+  else if (el.id === "verTodos") { verTodos = true; pintar() }
   else if (el.id === "limpiarFiltros") {
     filtroPct = 50; filtroTienda = "todas"; filtroGenero = "todos"; filtroEvento = "todos";
     for (const k of ["filtroPct", "filtroTienda", "filtroGenero", "filtroEvento"]) guardar(k, "");
@@ -1949,6 +2074,9 @@ class Manejador(BaseHTTPRequestHandler):
             if not q:
                 return self._json({"error": "Falta el nombre del juego"}, 400)
             return self._json(buscar_todo(q, pais))
+        if ruta == "/api/sugerir":
+            q = (args.get("q") or [""])[0].strip()[:60]
+            return self._json({"sugerencias": sugerencias(q)})
         if ruta == "/api/descuentos":
             pais = (args.get("pais") or ["AR"])[0].upper()
             pais = pais if pais in PAISES else "AR"
