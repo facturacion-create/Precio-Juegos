@@ -96,6 +96,13 @@ def http_json(url, data=None, headers=None):
         return json.loads(r.read().decode("utf-8"))
 
 
+def http_texto(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                                               "Accept-Language": "es-AR,es;q=0.9"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT + 10) as r:
+        return r.read().decode("utf-8", "ignore")
+
+
 ROMANOS = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
 
 
@@ -601,6 +608,7 @@ def _nintendo_precios(nsuids, pais):
             "precio": float(oferta["raw_value"]) if oferta else regular,
             "precio_original": regular if oferta else None,
             "moneda": p["regular_price"].get("currency", ""),
+            "termina": (oferta or {}).get("end_datetime"),  # cuándo termina la oferta
         }
     return precios
 
@@ -796,7 +804,7 @@ def _descuentos_nintendo(pais, minimo):
                 pct = round((1 - pr["precio"] / pr["precio_original"]) * 100)
                 salida.append({
                     "tienda": nombre, **juegos[nsuid], "precio": pr["precio"],
-                    "precio_original": pr["precio_original"], "moneda": pr["moneda"],
+                    "precio_original": pr["precio_original"], "moneda": pr["moneda"], "termina": pr.get("termina"),
                     "descuento": pct, "acepta_global": region == "US" and pais == "AR",
                 })
     _popularidad(salida, "_rango")
@@ -875,6 +883,75 @@ def _descuentos_xbox(titulos, pais):
     return salida
 
 
+# Canales de ofertas de xbox.com (el de Black Friday existe solo mientras dura el evento).
+XBOX_CANALES = (("blackfriday", "Black Friday"), ("GameDeals", None))
+XBOX_GENEROS = ("Action & adventure", "Shooter", "Role playing", "Sports", "Racing & flying", "Strategy",
+                "Fighting", "Platformer", "Simulation", "Family & kids", "Puzzle & trivia")
+
+
+def _xbox_pagina(canal, orden, genero, locale):
+    """Una página de un canal de ofertas de xbox.com: [(id, datos)] en el orden de la página."""
+    q = {"orderby": orden}
+    if genero:
+        q["Genre"] = genero
+    url = f"https://www.xbox.com/{locale}/games/browse/DynamicChannel.{canal}?" + urllib.parse.urlencode(q)
+    try:
+        s = http_texto(url)
+        m = re.search(r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;\s*\n", s, re.S)
+        core = json.loads(m.group(1))["core2"]
+    except Exception:
+        return []
+    resumenes = core.get("products", {}).get("productSummaries", {})
+    ids = []
+    for v in core.get("channels", {}).get("channelData", {}).values():
+        ids += [x.get("productId") for x in (v.get("data") or {}).get("products", [])]
+    return [(i.upper(), resumenes[i]) for i in ids if i in resumenes]
+
+
+def _descuentos_xbox_web(pais):
+    """Ofertas publicadas en xbox.com: cada canal ordenado por más populares y por
+    mayor descuento, en general y por género (cada página trae 25 juegos)."""
+    locale = PAISES.get(pais, {}).get("locale", "es-AR")
+    tareas = [(c, o, g) for c, _ in XBOX_CANALES for o in ("MostPopular desc", "DiscountPercentage desc")
+              for g in (None,) + XBOX_GENEROS]
+    eventos = dict(XBOX_CANALES)
+    items, rango = {}, {}
+    for (canal, orden, genero), pagina in zip(tareas, _pool_sub.map(lambda t: _xbox_pagina(*t, locale), tareas)):
+        for pos, (pid, x) in enumerate(pagina):
+            if orden.startswith("MostPopular"):  # posición en "más populares" = popularidad
+                rango[pid] = min(rango.get(pid, 9999), pos + (0 if genero is None else 25))
+            if x.get("productKind") != "Game":
+                continue
+            compra = next((c for c in (x.get("specificPrices") or {}).get("purchaseable") or []
+                           if (c.get("eligibilityInfo") or {}).get("eligibility") in (None, "None")  # no solo socios
+                           and (c.get("listPrice") or 0) > 0), None)
+            if not compra or (compra.get("msrp") or 0) <= compra["listPrice"]:
+                continue
+            it = items.get(pid)
+            if not it:
+                caja = ((x.get("images") or {}).get("boxArt") or (x.get("images") or {}).get("poster") or {}).get("url")
+                termina = compra.get("endDateUtc")
+                try:  # '12/01/2026 07:59:59' -> '2026-12-01T07:59:59Z'
+                    mes, dia, resto = termina.split("/", 2)
+                    anio, hora = resto.split(" ")
+                    termina = f"{anio}-{mes}-{dia}T{hora}Z"
+                except Exception:
+                    termina = None
+                it = items[pid] = {
+                    "tienda": "Xbox", "titulo": x.get("title", ""), "precio": float(compra["listPrice"]),
+                    "precio_original": float(compra["msrp"]), "moneda": compra.get("currency", ""),
+                    "descuento": round((1 - compra["listPrice"] / compra["msrp"]) * 100),
+                    "url": f"https://www.xbox.com/{locale}/games/store/x/{pid}",
+                    "mini": caja + "?w=160&h=160" if caja else None,
+                    "generos": generos_de(x.get("categories") or []), "termina": termina, "eventos": [],
+                }
+            if eventos.get(canal) and eventos[canal] not in it["eventos"]:
+                it["eventos"].append(eventos[canal])
+    for pid, it in items.items():
+        it["_rango"] = rango.get(pid, 5000)
+    return list(items.values())
+
+
 def mega_descuentos(pais, minimo=50):
     def traer():
         items, errores = [], []
@@ -885,13 +962,31 @@ def mega_descuentos(pais, minimo=50):
             except Exception as e:
                 print(f"[descuentos {nombre}] {type(e).__name__}: {e}", file=sys.stderr)
                 errores.append(f"{nombre}: {describir_error(e)}")
+        # Xbox: primero las ofertas publicadas en xbox.com; después, como respaldo, el
+        # catálogo de Game Pass y los juegos en oferta en otras tiendas.
+        xbox = {}
+        try:
+            for i in _descuentos_xbox_web(pais):
+                xbox[i["url"].rsplit("/", 1)[1].upper()] = i
+        except Exception as e:
+            print(f"[descuentos Xbox web] {type(e).__name__}: {e}", file=sys.stderr)
         try:
             titulos = sorted({re.sub(r"\s*\(Switch 2\)$", "", i["titulo"]) for i in items})
-            items.extend(_descuentos_xbox(titulos, pais))
+            for i in _descuentos_xbox(titulos, pais):
+                pid = i["url"].rsplit("/", 1)[1].upper()
+                if pid not in xbox:
+                    i["_rango"] = 6000 + i.pop("pop", 1) * 1000  # menos info de popularidad que las de xbox.com
+                    xbox[pid] = i
         except Exception as e:
             print(f"[descuentos Xbox] {type(e).__name__}: {e}", file=sys.stderr)
-            errores.append(f"Xbox: {describir_error(e)}")
+            if not xbox:
+                errores.append(f"Xbox: {describir_error(e)}")
+        xbox = list(xbox.values())
+        _popularidad(xbox, "_rango")
+        items.extend(xbox)
         items = [i for i in items if i["descuento"] >= minimo and i["precio"] > 0]
+        for i in items:  # 99,7% se redondea a 100%, pero no es gratis
+            i["descuento"] = min(i["descuento"], 99)
         # Sin repetidos (en Xbox la versión de consola y la de PC son productos distintos).
         unicos = {}
         for i in sorted(items, key=lambda i: i["precio"]):
@@ -1209,6 +1304,7 @@ details>summary::-webkit-details-marker{display:none}
 .oferta .info{flex:1;min-width:0}
 .oferta .nom{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .oferta .sub{font-size:.78rem;color:var(--sub)}
+.oferta .vence{font-size:.75rem;color:var(--warn);font-weight:600}
 .oferta .p{text-align:right;white-space:nowrap;font-weight:700}
 .oferta .p small{display:block;font-weight:400;font-size:.75rem;color:var(--sub);text-decoration:line-through}
 .vacio,.cargando{color:var(--sub);text-align:center;padding:28px 10px}
@@ -1396,7 +1492,17 @@ function alternarGuardado(clave) {
 }
 
 let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "50")), filtroTienda = leer("filtroTienda", "todas"), mostrarOfertas = 40;
-let ordenOfertas = leer("ordenOfertas", "descuento"), filtroGenero = leer("filtroGenero", "todos");
+let ordenOfertas = leer("ordenOfertas", "descuento"), filtroGenero = leer("filtroGenero", "todos"), filtroEvento = leer("filtroEvento", "todos");
+
+// "Termina el 25/11" si la oferta vence en los próximos 15 días
+function terminaTexto(iso) {
+  if (!iso) return "";
+  const f = new Date(iso), dias = (f - Date.now()) / 864e5;
+  if (isNaN(dias) || dias < 0 || dias > 15) return "";
+  if (dias < 1) return "⏰ Termina hoy";
+  if (dias < 2) return "⏰ Termina mañana";
+  return "Termina el " + f.toLocaleDateString("es-AR", {day: "numeric", month: "numeric"});
+}
 
 function pintarInicio() {
   const tabs = `<div class="tabs"><button class="tab${vista === "mis" ? " activa" : ""}" data-vista="mis">⭐ Mis juegos${(n => n ? ` <span class="nuevo">🔥${n}</span>` : "")(biblioteca().filter(j => j.oferta).length)}</button>
@@ -1420,11 +1526,15 @@ function pintarOfertas() {
   const cuenta = {};
   for (const i of ofertas.items) for (const g of i.generos || []) cuenta[g] = (cuenta[g] || 0) + 1;
   const generos = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a]);
+  const eventos = [...new Set(ofertas.items.flatMap(i => i.eventos || []))];
+  if (filtroEvento !== "todos" && !eventos.includes(filtroEvento)) filtroEvento = "todos";  // el evento terminó
   let lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda)
-    && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero)));
+    && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero))
+    && (filtroEvento === "todos" || (i.eventos || []).includes(filtroEvento)));
   if (ordenOfertas === "populares") lista = [...lista].sort((a, b) => (a.pop ?? 1) - (b.pop ?? 1) || b.descuento - a.descuento);
   const chip = (attr, val, actual, texto) => `<button class="chip${val == actual ? " activa" : ""}" ${attr}="${esc(val)}">${esc(texto)}</button>`;
-  return `<div class="filtros">${chip("data-orden", "descuento", ordenOfertas, "🔥 Mayor descuento")}${chip("data-orden", "populares", ordenOfertas, "⭐ Más vendidos")}</div>
+  return `${eventos.length ? `<div class="filtros">${chip("data-evento", "todos", filtroEvento, "Todas las ofertas")}${eventos.map(e => chip("data-evento", e, filtroEvento, (e === "Black Friday" ? "🖤 " : "🎉 ") + e)).join("")}</div>` : ""}
+    <div class="filtros">${chip("data-orden", "descuento", ordenOfertas, "🔥 Mayor descuento")}${chip("data-orden", "populares", ordenOfertas, "⭐ Más vendidos")}</div>
     <div class="filtros">${[50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}% o más`)).join("")}</div>
     <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas las tiendas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
     <div class="filtros desliza">${chip("data-genero", "todos", filtroGenero, "Todos los géneros")}${generos.map(g => chip("data-genero", g, filtroGenero, g)).join("")}</div>
@@ -1432,12 +1542,12 @@ function pintarOfertas() {
       const c = calcular(i);
       return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
         <span class="mini-wrap">${img(i.mini, "mini")}<span class="pct">-${i.descuento}%</span></span>
-        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div></span>
+        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.eventos || []).includes("Black Friday") ? " · 🖤" : ""}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div>${terminaTexto(i.termina) ? `<div class="vence">${esc(terminaTexto(i.termina))}</div>` : ""}</span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
     : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
-    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. "Más vendidos": según los más vendidos de Steam, el ranking de popularidad de Nintendo y los más jugados de Xbox. Steam: los más vendidos en oferta. Xbox no publica su lista de ofertas: se revisan los juegos del catálogo de Game Pass (incluye los exclusivos) y los que están en oferta en otras tiendas.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Xbox: las ofertas de xbox.com (incluido Black Friday) y del catálogo de Game Pass. Steam: los más vendidos en oferta. "Más vendidos": según Steam, el ranking de Nintendo y los más populares de xbox.com. Se actualiza cada una hora.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
 }
 
 function pintarBiblioteca() {
@@ -1586,10 +1696,11 @@ $("#res").addEventListener("toggle", e => {
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],[data-orden],[data-genero],#actualizarTodo,#masOfertas,#volver");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],[data-orden],[data-genero],[data-evento],#actualizarTodo,#masOfertas,#volver");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
+  else if (el.dataset.evento) { filtroEvento = el.dataset.evento; guardar("filtroEvento", filtroEvento); mostrarOfertas = 40; pintar() }
   else if (el.dataset.orden) { ordenOfertas = el.dataset.orden; guardar("ordenOfertas", ordenOfertas); mostrarOfertas = 40; pintar() }
   else if (el.dataset.genero) { filtroGenero = el.dataset.genero; guardar("filtroGenero", filtroGenero); mostrarOfertas = 40; pintar() }
   else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
