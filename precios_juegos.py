@@ -1487,6 +1487,11 @@ details>summary::-webkit-details-marker{display:none}
 .fila .nota{display:block;font-size:.78rem;color:var(--sub);font-weight:400}
 .fila .precio{font-weight:700;font-size:1.15rem;white-space:nowrap;text-align:right}
 .fila .precio small{display:block;font-size:.72rem;font-weight:600;color:var(--ok)}
+.fila .precio small.antes{color:var(--sub);font-weight:500}
+.fila .precio small.antes s{margin-right:4px}
+.fila .precio small.antes b{color:var(--ok)}
+.fila .precio small.antes{white-space:nowrap}
+.etq-mejor{display:block;font-size:.75rem;font-weight:700;color:var(--ok);margin-top:1px}
 .fila.mejor .precio{color:var(--ok)}
 .fila>summary::after{content:"›";color:var(--sub);font-size:1.3rem;transition:transform .15s}
 .fila[open]>summary::after{transform:rotate(90deg)}
@@ -1888,8 +1893,8 @@ function pintarDetalle(g) {
     if (otras.length) det.push(`<p>Otras ediciones en esta tienda:</p><ul>${otras.map(o => `<li><a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.titulo)}</a>: ${fmt(calcular(o).valor, calcular(o).moneda)}</li>`).join("")}</ul>`);
     if (f.t.aviso) det.push(`<p class="warn">${esc(f.t.aviso)}</p>`);
     return `<details class="fila${f === mejor ? " mejor" : ""}"><summary>
-      <span><span class="tienda">${esc(f.nombre)}</span>${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
-      <span class="precio">${fmt(c.valor, c.moneda)}${f === mejor || pct ? `<small>${[f === mejor ? "Más barato" : "", pct ? `-${pct}%` : ""].filter(Boolean).join(" · ")}</small>` : ""}</span>
+      <span><span class="tienda">${esc(f.nombre)}</span>${f === mejor ? '<span class="etq-mejor">Más barato</span>' : ""}${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
+      <span class="precio">${fmt(c.valor, c.moneda)}${pct ? `<small class="antes"><s>${fmt(c.original, c.moneda)}</s> <b>-${pct}%</b></small>` : ""}</span>
     </summary><div class="det">${det.join("")}</div></details>`;
   }).join("")}</div>` : "";
   if (faltan.length) html += `<div class="falta">No está en: ${faltan.map(t => t.buscar_url
