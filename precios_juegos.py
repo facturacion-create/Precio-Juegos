@@ -730,6 +730,70 @@ def _popularidad(items, clave, mayor_es_mejor=False):
         i.pop(clave, None)
 
 
+def _steam_items(appids, pais):
+    """Nombre, precio, descuento, fin de la oferta y etiquetas de muchos juegos de
+    Steam de una sola vez (de a 50)."""
+    salida = {}
+    appids = list(dict.fromkeys(int(a) for a in appids))
+    for k in range(0, len(appids), 50):
+        entrada = {"ids": [{"appid": a} for a in appids[k:k + 50]],
+                   "context": {"language": "spanish", "country_code": pais},
+                   "data_request": {"include_basic_info": True, "include_tag_count": 8}}
+        url = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?" + urllib.parse.urlencode(
+            {"input_json": json.dumps(entrada)})
+        try:
+            items = http_json(url).get("response", {}).get("store_items", [])
+        except Exception as e:
+            print(f"[steam items] {type(e).__name__}: {e}", file=sys.stderr)
+            continue
+        for it in items:
+            op = it.get("best_purchase_option") or {}
+            fin = max([d.get("discount_end_date") or 0 for d in op.get("active_discounts") or []] or [0])
+            salida[it.get("appid") or it.get("id")] = {
+                "nombre": it.get("name"), "tipo": it.get("type"),
+                "final": int(op["final_price_in_cents"]) / 100 if op.get("final_price_in_cents") else None,
+                "original": int(op["original_price_in_cents"]) / 100 if op.get("original_price_in_cents") else None,
+                "pct": op.get("discount_pct") or 0,
+                "termina": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(fin)) if fin else None,
+                "tags": it.get("tagids") or [],
+            }
+    return salida
+
+
+def _limpiar_evento(nombre):
+    """'astragon Publisher Sale 2026 – Save Big on...' -> 'astragon Publisher Sale'."""
+    n = re.split(r"\s+[–—-]\s+|!|\|", nombre or "")[0].strip()
+    n = re.sub(r"\s+20\d\d\b", "", n).strip(" :")
+    return n[:48]
+
+
+def _eventos_steam(pais):
+    """Eventos de ofertas que Steam destaca en su portada (ofertas de editor, de
+    franquicia, de entre semana, grandes rebajas...): [(nombre, appids)]."""
+    destacados = http_json(f"https://store.steampowered.com/api/featuredcategories?cc={pais}&l=spanish")
+    urls = []
+    for v in destacados.values():
+        if isinstance(v, dict) and v.get("id") == "cat_spotlight":
+            for it in v.get("items") or []:
+                if "/sale/" in (it.get("url") or "") and it["url"] not in urls:
+                    urls.append(it["url"])
+
+    def leer(url):
+        try:
+            pagina = http_texto(url.split("?")[0] + f"?cc={pais}&l=spanish")
+            m = re.search(r'data-partnereventstore="([^"]*)"', pagina)
+            ev = json.loads(html.unescape(m.group(1)))
+            ev = ev[0] if isinstance(ev, list) else ev
+            datos = json.loads(ev.get("jsondata") or "{}")
+            apps = [c["id"] for sec in datos.get("sale_sections", []) for c in sec.get("capsules") or []
+                    if c.get("type") in ("game", "app") and c.get("id")]
+            return _limpiar_evento(ev.get("event_name")), list(dict.fromkeys(apps))[:80]
+        except Exception as e:
+            print(f"[evento steam] {url}: {type(e).__name__}: {e}", file=sys.stderr)
+            return None
+    return [e for e in _pool_sub.map(leer, urls[:8]) if e and e[1]]
+
+
 def _descuentos_steam(pais):
     """Los más vendidos de Steam que están en oferta (solo juegos)."""
     url = "https://store.steampowered.com/search/results/?" + urllib.parse.urlencode({
@@ -761,6 +825,9 @@ def _descuentos_steam(pais):
             "moneda": "USD" if pais == "AR" else "", "descuento": pct,
             "url": f"https://store.steampowered.com/app/{appid.group(1)}/",
         })
+    detalles = _steam_items([i["url"].rstrip("/").rsplit("/", 1)[1] for i in items], pais)
+    for i in items:
+        i["termina"] = (detalles.get(int(i["url"].rstrip("/").rsplit("/", 1)[1])) or {}).get("termina")
     _popularidad(items, "_rango")  # vienen ordenados por más vendidos
     return items
 
@@ -883,8 +950,39 @@ def _descuentos_xbox(titulos, pais):
     return salida
 
 
-# Canales de ofertas de xbox.com (el de Black Friday existe solo mientras dura el evento).
-XBOX_CANALES = (("blackfriday", "Black Friday"), ("GameDeals", None))
+# Nombres en castellano de eventos conocidos de xbox.com (los demás se arman con el nombre del canal).
+NOMBRES_EVENTOS_XBOX = {
+    "blackfriday": "Black Friday", "cybermonday": "Cyber Monday", "publishersale": "Ofertas de editor",
+    "ultimategamesale": "Ultimate Game Sale", "springsale": "Ofertas de primavera",
+    "summersale": "Ofertas de verano", "holidaysale": "Ofertas de fin de año",
+    "countdownsale": "Countdown Sale", "lunarnewyearsale": "Año Nuevo Lunar",
+}
+
+
+def _eventos_xbox(locale):
+    """Eventos de ofertas que xbox.com muestra hoy en su página de ofertas
+    (Black Friday, ofertas de editor...): [(ruta del canal, nombre)]."""
+    try:
+        pagina = http_texto(f"https://www.xbox.com/{locale}/promotions/sales/sales-and-specials")
+    except Exception as e:
+        print(f"[eventos xbox] {type(e).__name__}: {e}", file=sys.stderr)
+        return []
+    canales = {}
+    for c in re.findall(r"DynamicChannel\.([A-Za-z0-9_-]+)", pagina):
+        canales.setdefault(re.sub(r"[^a-z0-9]", "", c.lower()), f"DynamicChannel.{c}")
+    for slug in re.findall(r"/games/browse/([a-z0-9-]+)", pagina):
+        canales.setdefault(re.sub(r"[^a-z0-9]", "", slug), slug)
+    canales.pop("gamedeals", None)
+    titulos = [html.unescape(re.sub(r"<[^>]+>", "", t)).strip() for t in re.findall(r"<h2[^>]*>(.*?)</h2>", pagina, re.S)]
+    salida = []
+    for clave_, ruta in canales.items():
+        nombre = NOMBRES_EVENTOS_XBOX.get(clave_)
+        if not nombre and len(canales) == 1 and titulos:  # 'Oferta de Black Friday de XBOX' -> 'Black Friday'
+            nombre = re.sub(r"^(ofertas?|rebajas?|promoci[oó]n(es)?) de\s+|\s+de xbox$", "", titulos[0], flags=re.I)
+        if not nombre:
+            nombre = re.sub(r"(?<=[a-z])(?=[A-Z])|[-_]", " ", ruta.split(".")[-1]).strip().title()
+        salida.append((ruta, nombre))
+    return salida
 XBOX_GENEROS = ("Action & adventure", "Shooter", "Role playing", "Sports", "Racing & flying", "Strategy",
                 "Fighting", "Platformer", "Simulation", "Family & kids", "Puzzle & trivia")
 
@@ -894,7 +992,7 @@ def _xbox_pagina(canal, orden, genero, locale):
     q = {"orderby": orden}
     if genero:
         q["Genre"] = genero
-    url = f"https://www.xbox.com/{locale}/games/browse/DynamicChannel.{canal}?" + urllib.parse.urlencode(q)
+    url = f"https://www.xbox.com/{locale}/games/browse/{canal}?" + urllib.parse.urlencode(q)
     try:
         s = http_texto(url)
         m = re.search(r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;\s*\n", s, re.S)
@@ -912,9 +1010,10 @@ def _descuentos_xbox_web(pais):
     """Ofertas publicadas en xbox.com: cada canal ordenado por más populares y por
     mayor descuento, en general y por género (cada página trae 25 juegos)."""
     locale = PAISES.get(pais, {}).get("locale", "es-AR")
-    tareas = [(c, o, g) for c, _ in XBOX_CANALES for o in ("MostPopular desc", "DiscountPercentage desc")
+    canales = _eventos_xbox(locale) + [("DynamicChannel.GameDeals", None)]
+    tareas = [(c, o, g) for c, _ in canales for o in ("MostPopular desc", "DiscountPercentage desc")
               for g in (None,) + XBOX_GENEROS]
-    eventos = dict(XBOX_CANALES)
+    eventos = dict(canales)
     items, rango = {}, {}
     for (canal, orden, genero), pagina in zip(tareas, _pool_sub.map(lambda t: _xbox_pagina(*t, locale), tareas)):
         for pos, (pid, x) in enumerate(pagina):
@@ -952,7 +1051,7 @@ def _descuentos_xbox_web(pais):
     return list(items.values())
 
 
-def mega_descuentos(pais, minimo=50):
+def mega_descuentos(pais, minimo=30):
     def traer():
         items, errores = [], []
         for nombre, f in (("Steam", lambda: _descuentos_steam(pais)),
@@ -962,6 +1061,35 @@ def mega_descuentos(pais, minimo=50):
             except Exception as e:
                 print(f"[descuentos {nombre}] {type(e).__name__}: {e}", file=sys.stderr)
                 errores.append(f"{nombre}: {describir_error(e)}")
+        # Eventos de Steam (ofertas de editor, de franquicia, grandes rebajas...)
+        try:
+            eventos_steam = _eventos_steam(pais)
+            todos = [a for _, apps in eventos_steam for a in apps]
+            detalles = _steam_items(todos, pais) if todos else {}
+            etiquetas = _etiquetas_steam()
+            por_url = {i["url"]: i for i in items if i["tienda"] == "Steam"}
+            for nombre, apps in eventos_steam:
+                for a in apps:
+                    d = detalles.get(a)
+                    if not d or not d["pct"] or not d["final"] or d["tipo"] not in (0, None):
+                        continue
+                    url = f"https://store.steampowered.com/app/{a}/"
+                    it = por_url.get(url)
+                    if not it:
+                        it = por_url[url] = {
+                            "tienda": "Steam", "titulo": d["nombre"], "precio": d["final"],
+                            "precio_original": d["original"], "moneda": "USD" if pais == "AR" else "",
+                            "descuento": d["pct"], "url": url, "mini": portada_steam(a)[1],
+                            "generos": generos_de([etiquetas.get(t, "") for t in d["tags"]]),
+                            "termina": d["termina"], "pop": 1.0,
+                        }
+                        items.append(it)
+                    it.setdefault("eventos", [])
+                    if nombre not in it["eventos"]:
+                        it["eventos"].append(nombre)
+        except Exception as e:
+            print(f"[eventos steam] {type(e).__name__}: {e}", file=sys.stderr)
+
         # Xbox: primero las ofertas publicadas en xbox.com; después, como respaldo, el
         # catálogo de Game Pass y los juegos en oferta en otras tiendas.
         xbox = {}
@@ -992,7 +1120,20 @@ def mega_descuentos(pais, minimo=50):
         for i in sorted(items, key=lambda i: i["precio"]):
             unicos.setdefault((i["tienda"], normalizar(i["titulo"])), i)
         items = sorted(unicos.values(), key=lambda i: (-i["descuento"], normalizar(i["titulo"])))
-        return {"pais": pais, "minimo": minimo, "items": items, "errores": errores}
+        # Resumen de eventos: nombre, en qué tiendas, cuántas ofertas y cuándo termina
+        eventos, fechas = {}, {}
+        for i in items:
+            for e in i.get("eventos") or []:
+                ev = eventos.setdefault(e, {"nombre": e, "tiendas": [], "n": 0, "termina": None})
+                ev["n"] += 1
+                if i["tienda"] not in ev["tiendas"]:
+                    ev["tiendas"].append(i["tienda"])
+                if i.get("termina"):
+                    fechas.setdefault(e, []).append(i["termina"][:10])
+        for e, fs in fechas.items():  # la fecha de fin que comparten la mayoría de sus juegos
+            eventos[e]["termina"] = max(set(fs), key=fs.count) + "T12:00:00Z"
+        return {"pais": pais, "minimo": minimo, "items": items, "errores": errores,
+                "eventos": sorted(eventos.values(), key=lambda e: -e["n"])}
     return cacheado(("descuentos", pais, minimo), traer, ttl=60 * 60)
 
 
@@ -1304,6 +1445,7 @@ details>summary::-webkit-details-marker{display:none}
 .oferta .info{flex:1;min-width:0}
 .oferta .nom{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .oferta .sub{font-size:.78rem;color:var(--sub)}
+.vence-ev{font-size:.82rem;color:var(--warn);font-weight:600;margin:-2px 0 6px}
 .oferta .vence{font-size:.75rem;color:var(--warn);font-weight:600}
 .oferta .p{text-align:right;white-space:nowrap;font-weight:700}
 .oferta .p small{display:block;font-weight:400;font-size:.75rem;color:var(--sub);text-decoration:line-through}
@@ -1526,23 +1668,27 @@ function pintarOfertas() {
   const cuenta = {};
   for (const i of ofertas.items) for (const g of i.generos || []) cuenta[g] = (cuenta[g] || 0) + 1;
   const generos = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a]);
-  const eventos = [...new Set(ofertas.items.flatMap(i => i.eventos || []))];
-  if (filtroEvento !== "todos" && !eventos.includes(filtroEvento)) filtroEvento = "todos";  // el evento terminó
+  const eventos = (ofertas.eventos || []).filter(e => filtroTienda === "todas" || e.tiendas.includes(filtroTienda));
+  if (filtroEvento !== "todos" && !(ofertas.eventos || []).some(e => e.nombre === filtroEvento)) filtroEvento = "todos";  // el evento terminó
   let lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda)
     && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero))
     && (filtroEvento === "todos" || (i.eventos || []).includes(filtroEvento)));
   if (ordenOfertas === "populares") lista = [...lista].sort((a, b) => (a.pop ?? 1) - (b.pop ?? 1) || b.descuento - a.descuento);
   const chip = (attr, val, actual, texto) => `<button class="chip${val == actual ? " activa" : ""}" ${attr}="${esc(val)}">${esc(texto)}</button>`;
-  return `${eventos.length ? `<div class="filtros">${chip("data-evento", "todos", filtroEvento, "Todas las ofertas")}${eventos.map(e => chip("data-evento", e, filtroEvento, (e === "Black Friday" ? "🖤 " : "🎉 ") + e)).join("")}</div>` : ""}
+  const evSel = (ofertas.eventos || []).find(e => e.nombre === filtroEvento);
+  const icono = n => /black friday/i.test(n) ? "🖤" : /cyber/i.test(n) ? "💻" : /editor|publisher/i.test(n) ? "🏷️" : /franquicia|serie|franchise/i.test(n) ? "🎮" : "🎉";
+  return `${eventos.length ? `<h2>Eventos de ofertas</h2><div class="filtros desliza">${chip("data-evento", "todos", filtroEvento, "Todas las ofertas")}${eventos.map(e =>
+      chip("data-evento", e.nombre, filtroEvento, `${icono(e.nombre)} ${e.nombre} · ${e.tiendas.map(t => t.replace("Nintendo eShop", "eShop")).join(", ")} (${e.n})`)).join("")}</div>
+    ${evSel && terminaTexto(evSel.termina) ? `<div class="vence-ev">${esc(terminaTexto(evSel.termina))}</div>` : ""}` : ""}
     <div class="filtros">${chip("data-orden", "descuento", ordenOfertas, "🔥 Mayor descuento")}${chip("data-orden", "populares", ordenOfertas, "⭐ Más vendidos")}</div>
-    <div class="filtros">${[50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}% o más`)).join("")}</div>
+    <div class="filtros">${[30, 50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}%+`)).join("")}</div>
     <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas las tiendas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
     <div class="filtros desliza">${chip("data-genero", "todos", filtroGenero, "Todos los géneros")}${generos.map(g => chip("data-genero", g, filtroGenero, g)).join("")}</div>
     ${lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
       const c = calcular(i);
       return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
         <span class="mini-wrap">${img(i.mini, "mini")}<span class="pct">-${i.descuento}%</span></span>
-        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.eventos || []).includes("Black Friday") ? " · 🖤" : ""}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div>${terminaTexto(i.termina) ? `<div class="vence">${esc(terminaTexto(i.termina))}</div>` : ""}</span>
+        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.eventos || []).length ? " · " + (i.eventos || []).map(e => /black friday/i.test(e) ? "🖤" : "🏷️").join("") : ""}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div>${terminaTexto(i.termina) ? `<div class="vence">${esc(terminaTexto(i.termina))}</div>` : ""}</span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
@@ -1797,7 +1943,7 @@ def precalentar_descuentos():
     while True:
         try:
             with _cache_lock:
-                _cache.pop(("descuentos", "AR", 50), None)
+                _cache.pop(("descuentos", "AR", 30), None)
             mega_descuentos("AR")
         except Exception as e:
             print(f"[precalentar] {type(e).__name__}: {e}", file=sys.stderr)
