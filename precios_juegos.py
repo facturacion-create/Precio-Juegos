@@ -1438,6 +1438,14 @@ details>summary::-webkit-details-marker{display:none}
 .filtros.desliza{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;margin-right:-16px;padding-right:16px}
 .filtros.desliza .chip{flex:none}
 .chip.activa{background:var(--acento);border-color:var(--acento);color:#fff}
+.barra-filtros{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:12px -16px 4px 0;padding:0 16px 4px 0;scrollbar-width:none}
+.barra-filtros::-webkit-scrollbar{display:none}
+.pill{position:relative;flex:none;display:inline-flex;align-items:center;border:1px solid var(--borde);background:var(--card);border-radius:99px;padding:7px 26px 7px 12px;font-size:.86rem;white-space:nowrap;color:var(--txt)}
+.pill::after{content:"▾";position:absolute;right:10px;color:var(--sub);font-size:.75rem}
+.pill.activa{border-color:var(--acento);color:var(--acento);font-weight:600}
+.pill select{position:absolute;inset:0;width:100%;height:100%;opacity:0;font-size:16px;cursor:pointer}
+.resumen-filtros{font-size:.8rem;color:var(--sub);margin:4px 0 8px}
+.link-btn{background:none;border:none;color:var(--acento);padding:0;font-size:inherit;font-weight:600}
 .ofertas{background:var(--card);border:1px solid var(--borde);border-radius:16px;overflow:hidden}
 .oferta{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--borde);cursor:pointer}
 .oferta:last-child{border-bottom:none}
@@ -1633,8 +1641,8 @@ function alternarGuardado(clave) {
   guardarBiblioteca(b); pintar();
 }
 
-let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "50")), filtroTienda = leer("filtroTienda", "todas"), mostrarOfertas = 40;
-let ordenOfertas = leer("ordenOfertas", "descuento"), filtroGenero = leer("filtroGenero", "todos"), filtroEvento = leer("filtroEvento", "todos");
+let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "") || 50), filtroTienda = leer("filtroTienda", "") || "todas", mostrarOfertas = 40;
+let ordenOfertas = leer("ordenOfertas", "") || "descuento", filtroGenero = leer("filtroGenero", "") || "todos", filtroEvento = leer("filtroEvento", "") || "todos";
 
 // "Termina el 25/11" si la oferta vence en los próximos 15 días
 function terminaTexto(iso) {
@@ -1664,36 +1672,51 @@ function pintarOfertas() {
   if (ofertas.cargando) return '<div class="cargando">Buscando ofertas…</div>';
   if (ofertas.error) return '<div class="vacio error">No se pudieron cargar las ofertas. Probá de nuevo en un rato.</div>';
   const tiendas = [...new Set(ofertas.items.map(i => i.tienda))];
-  // Géneros presentes, de más a menos ofertas
+  if (filtroTienda !== "todas" && !tiendas.includes(filtroTienda)) filtroTienda = "todas";
   const cuenta = {};
   for (const i of ofertas.items) for (const g of i.generos || []) cuenta[g] = (cuenta[g] || 0) + 1;
   const generos = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a]);
+  // Eventos de la tienda elegida. Si el evento elegido no es de esa tienda (o terminó), se deja de filtrar por él.
   const eventos = (ofertas.eventos || []).filter(e => filtroTienda === "todas" || e.tiendas.includes(filtroTienda));
-  if (filtroEvento !== "todos" && !(ofertas.eventos || []).some(e => e.nombre === filtroEvento)) filtroEvento = "todos";  // el evento terminó
+  if (filtroEvento !== "todos" && !eventos.some(e => e.nombre === filtroEvento)) filtroEvento = "todos";
   let lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda)
     && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero))
     && (filtroEvento === "todos" || (i.eventos || []).includes(filtroEvento)));
   if (ordenOfertas === "populares") lista = [...lista].sort((a, b) => (a.pop ?? 1) - (b.pop ?? 1) || b.descuento - a.descuento);
-  const chip = (attr, val, actual, texto) => `<button class="chip${val == actual ? " activa" : ""}" ${attr}="${esc(val)}">${esc(texto)}</button>`;
-  const evSel = (ofertas.eventos || []).find(e => e.nombre === filtroEvento);
+  if (ordenOfertas === "termina") lista = [...lista].sort((a, b) => (a.termina || "9") < (b.termina || "9") ? -1 : (a.termina || "9") > (b.termina || "9") ? 1 : b.descuento - a.descuento);
+  if (ordenOfertas === "barato") lista = [...lista].sort((a, b) => calcular(a).valor - calcular(b).valor);
+
   const icono = n => /black friday/i.test(n) ? "🖤" : /cyber/i.test(n) ? "💻" : /editor|publisher/i.test(n) ? "🏷️" : /franquicia|serie|franchise/i.test(n) ? "🎮" : "🎉";
-  return `${eventos.length ? `<h2>Eventos de ofertas</h2><div class="filtros desliza">${chip("data-evento", "todos", filtroEvento, "Todas las ofertas")}${eventos.map(e =>
-      chip("data-evento", e.nombre, filtroEvento, `${icono(e.nombre)} ${e.nombre} · ${e.tiendas.map(t => t.replace("Nintendo eShop", "eShop")).join(", ")} (${e.n})`)).join("")}</div>
-    ${evSel && terminaTexto(evSel.termina) ? `<div class="vence-ev">${esc(terminaTexto(evSel.termina))}</div>` : ""}` : ""}
-    <div class="filtros">${chip("data-orden", "descuento", ordenOfertas, "🔥 Mayor descuento")}${chip("data-orden", "populares", ordenOfertas, "⭐ Más vendidos")}</div>
-    <div class="filtros">${[30, 50, 70, 90].map(p => chip("data-pct", p, filtroPct, `-${p}%+`)).join("")}</div>
-    <div class="filtros">${chip("data-tienda", "todas", filtroTienda, "Todas las tiendas")}${tiendas.map(t => chip("data-tienda", t, filtroTienda, t.replace("Nintendo eShop", "eShop"))).join("")}</div>
-    <div class="filtros desliza">${chip("data-genero", "todos", filtroGenero, "Todos los géneros")}${generos.map(g => chip("data-genero", g, filtroGenero, g)).join("")}</div>
-    ${lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
-      const c = calcular(i);
+  const corto = t => t.replace("Nintendo eShop", "eShop");
+  // Filtros minimalistas: una fila de "pastillas"; al tocar una se abre la lista de opciones del celular.
+  const pastilla = (filtro, actual, defecto, opciones) => {
+    const sel = opciones.find(o => String(o[0]) === String(actual)) || opciones[0];
+    return `<label class="pill${String(actual) !== String(defecto) ? " activa" : ""}"><span>${esc(sel[1])}</span>
+      <select data-filtro="${filtro}">${opciones.map(o => `<option value="${esc(o[0])}"${String(o[0]) === String(actual) ? " selected" : ""}>${esc(o[2] || o[1])}</option>`).join("")}</select></label>`;
+  };
+  const evSel = eventos.find(e => e.nombre === filtroEvento);
+  const hayFiltros = filtroPct != 50 || filtroTienda !== "todas" || filtroGenero !== "todos" || filtroEvento !== "todos";
+  let html = `<div class="barra-filtros">
+    ${pastilla("orden", ordenOfertas, "descuento", [["descuento", "🔥 Mayor descuento"], ["populares", "⭐ Más vendidos"], ["termina", "⏰ Terminan pronto"], ["barato", "💲 Más baratos"]])}
+    ${eventos.length ? pastilla("evento", filtroEvento, "todos", [["todos", "🎉 Eventos", "Todos los eventos"], ...eventos.map(e => [e.nombre, `${icono(e.nombre)} ${e.nombre}`, `${icono(e.nombre)} ${e.nombre} · ${e.tiendas.map(corto).join(", ")} (${e.n})`])]) : ""}
+    ${pastilla("pct", filtroPct, 50, [30, 50, 70, 90].map(p => [p, `-${p}% o más`]))}
+    ${pastilla("tienda", filtroTienda, "todas", [["todas", "Tiendas", "Todas las tiendas"], ...tiendas.map(t => [t, corto(t)])])}
+    ${pastilla("genero", filtroGenero, "todos", [["todos", "Géneros", "Todos los géneros"], ...generos.map(g => [g, g])])}
+  </div>
+  <div class="resumen-filtros">${lista.length} ofertas${evSel && terminaTexto(evSel.termina) ? ` · <span class="vence">${esc(terminaTexto(evSel.termina))}</span>` : ""}${hayFiltros ? ` · <button class="link-btn" id="limpiarFiltros">Limpiar filtros</button>` : ""}</div>`;
+
+  html += lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
+      const c = calcular(i), vence = terminaTexto(i.termina);
+      const extra = [corto(i.tienda), ...(i.eventos || []).map(e => icono(e))].join(" · ");
       return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
         <span class="mini-wrap">${img(i.mini, "mini")}<span class="pct">-${i.descuento}%</span></span>
-        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(i.tienda)}${(i.eventos || []).length ? " · " + (i.eventos || []).map(e => /black friday/i.test(e) ? "🖤" : "🏷️").join("") : ""}${(i.generos || []).length ? " · " + esc([...new Set([filtroGenero, ...i.generos].filter(g => (i.generos || []).includes(g)))].slice(0, 2).join(", ")) : ""}</div>${terminaTexto(i.termina) ? `<div class="vence">${esc(terminaTexto(i.termina))}</div>` : ""}</span>
+        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(extra)}${vence ? ` · <span class="vence">${esc(vence)}</span>` : ""}</div></span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
-    : '<div class="vacio">No hay ofertas con ese filtro.</div>'}
-    <div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Xbox: las ofertas de xbox.com (incluido Black Friday) y del catálogo de Game Pass. Steam: los más vendidos en oferta. "Más vendidos": según Steam, el ranking de Nintendo y los más populares de xbox.com. Se actualiza cada una hora.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+    : '<div class="vacio">No hay ofertas con estos filtros.</div>';
+  html += `<div class="falta">Tocá un juego para comparar su precio en todas las tiendas. Se actualiza cada una hora.${ofertas.errores?.length ? " (" + esc(ofertas.errores.join(", ")) + ")" : ""}</div>`;
+  return html;
 }
 
 function pintarBiblioteca() {
@@ -1835,6 +1858,17 @@ async function buscar(q, desdeHistorial, abrir) {
   } catch { ultimo = {error: "No se pudo conectar con el servidor. Si recién lo abriste, esperá un minuto y probá de nuevo."} }
   pintar();
 }
+$("#res").addEventListener("change", e => {
+  const f = e.target.dataset && e.target.dataset.filtro;
+  if (!f) return;
+  const v = e.target.value;
+  if (f === "orden") { ordenOfertas = v; guardar("ordenOfertas", v) }
+  if (f === "evento") { filtroEvento = v; guardar("filtroEvento", v) }
+  if (f === "pct") { filtroPct = Number(v); guardar("filtroPct", v) }
+  if (f === "tienda") { filtroTienda = v; guardar("filtroTienda", v) }
+  if (f === "genero") { filtroGenero = v; guardar("filtroGenero", v) }
+  mostrarOfertas = 40; pintar();
+});
 $("#res").addEventListener("toggle", e => {
   const c = e.target.closest && e.target.closest(".jcard");
   if (c && e.target === c) c.open ? abiertos.add(c.dataset.clave) : abiertos.delete(c.dataset.clave);
@@ -1842,7 +1876,7 @@ $("#res").addEventListener("toggle", e => {
 $("#f").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) buscar(q) });
 $("#q").addEventListener("input", () => { if (!$("#q").value && ultimo && !ultimo.cargando) { ultimo = null; pintar() } });
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-pct],[data-tienda],[data-orden],[data-genero],[data-evento],#actualizarTodo,#masOfertas,#volver");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
@@ -1850,6 +1884,11 @@ $("#res").addEventListener("click", e => {
   else if (el.dataset.orden) { ordenOfertas = el.dataset.orden; guardar("ordenOfertas", ordenOfertas); mostrarOfertas = 40; pintar() }
   else if (el.dataset.genero) { filtroGenero = el.dataset.genero; guardar("filtroGenero", filtroGenero); mostrarOfertas = 40; pintar() }
   else if (el.dataset.tienda) { filtroTienda = el.dataset.tienda; guardar("filtroTienda", filtroTienda); mostrarOfertas = 40; pintar() }
+  else if (el.id === "limpiarFiltros") {
+    filtroPct = 50; filtroTienda = "todas"; filtroGenero = "todos"; filtroEvento = "todos";
+    for (const k of ["filtroPct", "filtroTienda", "filtroGenero", "filtroEvento"]) guardar(k, "");
+    mostrarOfertas = 40; pintar();
+  }
   else if (el.id === "masOfertas") { mostrarOfertas += 40; pintar() }
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar, false, el.dataset.clave) }
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
