@@ -1930,7 +1930,6 @@ function pintar() {
       <h2>Lo que pagarías${conImp ? " (con impuestos)" : ""}</h2>${pintarDetalle(g)}`;
   } else {
     // Varios juegos (una saga, nombres parecidos): todos a la vista con su precio más barato.
-    if (!abiertos.size) abiertos.add(ultimo.juegos[0].clave);
     const visibles = verTodos ? ultimo.juegos : ultimo.juegos.slice(0, 12);
     html += `<h2>Encontré ${ultimo.juegos.length} juegos${conImp ? " · precios con impuestos" : ""}</h2>` + visibles.map(g => {
       const m = mejorOpcion(ultimo, g.clave), o = mejorOferta(ultimo, g.clave);
