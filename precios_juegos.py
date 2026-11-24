@@ -1481,7 +1481,6 @@ details>summary::-webkit-details-marker{display:none}
 .fila{border-bottom:1px solid var(--borde)}
 .fila:last-child{border-bottom:none}
 .fila>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 14px}
-.fila.mejor>summary{background:var(--okbg)}
 .fila>summary>span:first-child{flex:1;min-width:0}
 .fila .tienda{font-weight:600}
 .fila .nota{display:block;font-size:.78rem;color:var(--sub);font-weight:400}
@@ -1491,7 +1490,7 @@ details>summary::-webkit-details-marker{display:none}
 .fila .precio small.antes s{margin-right:4px}
 .fila .precio small.antes b{color:var(--ok)}
 .fila .precio small.antes{white-space:nowrap}
-.etq-mejor{display:block;font-size:.75rem;font-weight:700;color:var(--ok);margin-top:1px}
+.etq-mejor{display:table;font-size:.7rem;font-weight:700;color:var(--ok);border:1px solid var(--ok);border-radius:99px;padding:0 7px;margin-top:4px}
 .fila.mejor .precio{color:var(--ok)}
 .fila>summary::after{content:"›";color:var(--sub);font-size:1.3rem;transition:transform .15s}
 .fila[open]>summary::after{transform:rotate(90deg)}
