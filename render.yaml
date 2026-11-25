@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: precios-juegos
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python precios_juegos.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
