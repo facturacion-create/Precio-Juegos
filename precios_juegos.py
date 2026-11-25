@@ -1216,7 +1216,10 @@ def detectar_juegos(tiendas):
                                                 "pago": False, "imagenes": []})
             if it.get("imagen"):
                 # Preferir la portada del juego base antes que la de una edición
-                g["imagenes"].append((it.get("tipo") != "juego", it["imagen"], it.get("mini") or it["imagen"]))
+                # y la de Xbox o Nintendo antes que la de Steam (algunos juegos nuevos de
+                # Steam tienen una imagen provisoria que dice "Header Capsule")
+                fuente = 2 if "steamstatic" in it["imagen"] else 0 if "microsoft" in it["imagen"] else 1
+                g["imagenes"].append((it.get("tipo") != "juego", fuente, it["imagen"], it.get("mini") or it["imagen"]))
             g["puntaje"] = max(g["puntaje"], it["puntaje"])
             g["pago"] = g["pago"] or it["precio"] > 0
             g["tiendas"].add(t["tienda"])
@@ -1226,9 +1229,9 @@ def detectar_juegos(tiendas):
         # Nombre para mostrar: el del juego base más corto (sin edición ni plataforma).
         titulo = min(g["titulos"])[2]
         titulo = re.sub(r"\s*\((Switch 2|solo PC)\)$", "", titulo)
-        img = min(g["imagenes"]) if g["imagenes"] else (False, None, None)
+        img = min(g["imagenes"]) if g["imagenes"] else (False, 0, None, None)
         salida.append({"clave": g["clave"], "titulo": titulo, "puntaje": g["puntaje"],
-                       "n": len(g["tiendas"]), "_pago": g["pago"], "imagen": img[1], "mini": img[2]})
+                       "n": len(g["tiendas"]), "_pago": g["pago"], "imagen": img[2], "mini": img[3]})
     # Un juego que está en varias tiendas es más probablemente el que se buscó.
     salida.sort(key=lambda g: (g["_pago"], round(g["puntaje"] + 0.2 * (g["n"] - 1), 1), g["n"], g["puntaje"]), reverse=True)
     for g in salida:
@@ -1503,7 +1506,9 @@ details>summary::-webkit-details-marker{display:none}
 .fila .precio small.antes b{color:var(--ok)}
 .fila .precio small.antes{white-space:nowrap}
 .etq-mejor{display:table;font-size:.7rem;font-weight:700;color:var(--ok);border:1px solid var(--ok);border-radius:99px;padding:0 7px;margin-top:4px}
-.fila.mejor .precio{color:var(--ok)}
+.fila .precio.rebajado{color:var(--ok)}
+.jprecio.rebajado{color:var(--ok)}
+.jprecio small b{color:var(--ok);font-weight:700}
 .fila>summary::after{content:"›";color:var(--sub);font-size:1.3rem;transition:transform .15s}
 .fila[open]>summary::after{transform:rotate(90deg)}
 .det{padding:0 14px 14px;font-size:.88rem;color:var(--sub)}
@@ -1905,7 +1910,7 @@ function pintarDetalle(g) {
     if (f.t.aviso) det.push(`<p class="warn">${esc(f.t.aviso)}</p>`);
     return `<details class="fila${f === mejor ? " mejor" : ""}"><summary>
       <span><span class="tienda">${esc(f.nombre)}</span>${f === mejor ? '<span class="etq-mejor">Más barato</span>' : ""}${nota ? `<span class="nota">${esc(nota)}</span>` : ""}</span>
-      <span class="precio">${fmt(c.valor, c.moneda)}${pct ? `<small class="antes"><s>${fmt(c.original, c.moneda)}</s> <b>-${pct}%</b></small>` : ""}</span>
+      <span class="precio${pct ? " rebajado" : ""}">${fmt(c.valor, c.moneda)}${pct ? `<small class="antes"><s>${fmt(c.original, c.moneda)}</s> <b>-${pct}%</b></small>` : ""}</span>
     </summary><div class="det">${det.join("")}</div></details>`;
   }).join("")}</div>` : "";
   if (faltan.length) html += `<div class="falta">No está en: ${faltan.map(t => t.buscar_url
@@ -1949,7 +1954,8 @@ function pintar() {
     const visibles = verTodos ? ultimo.juegos : ultimo.juegos.slice(0, 12);
     html += `<h2>Encontré ${ultimo.juegos.length} juegos${conImp ? " · precios con impuestos" : ""}</h2>` + visibles.map(g => {
       const m = mejorOpcion(ultimo, g.clave), o = mejorOferta(ultimo, g.clave);
-      const precio = m ? `<span class="jprecio">${fmt(m.valor, m.moneda)}<small>${o && o.tienda === m.tienda ? `-${o.pct}% · ` : ""}${esc(m.tienda)}</small></span>` : `<span class="jprecio"><small>sin precio</small></span>`;
+      const enOferta = o && o.tienda === m?.tienda;
+      const precio = m ? `<span class="jprecio${enOferta ? " rebajado" : ""}">${fmt(m.valor, m.moneda)}<small>${enOferta ? `<b>-${o.pct}%</b> · ` : ""}${esc(m.tienda)}</small></span>` : `<span class="jprecio"><small>sin precio</small></span>`;
       return `<details class="jcard" data-clave="${esc(g.clave)}"${abiertos.has(g.clave) ? " open" : ""}>
         <summary>${img(g.mini, "mini")}<span class="jtit">${esc(g.titulo)}${enBiblioteca(g.clave) ? " ★" : ""}</span>${precio}</summary>
         <div class="jbody">${img(g.imagen, "portada chica")}<div class="jacciones">${botonGuardar(g.clave)}</div>${pintarDetalle(g)}</div></details>`;
