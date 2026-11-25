@@ -480,12 +480,14 @@ def buscar_steam(consulta, pais):
             "imagen": portada_steam(it.get("id"))[0], "mini": portada_steam(it.get("id"))[1],
             "_id": it.get("id"),
         })
-    # Steam no dice en la búsqueda si algo es juego o DLC: se consulta aparte.
-    tipos = list(_pool_sub.map(lambda it: _steam_tipo(it["_id"]), items))
-    for it, tipo in zip(items, tipos):
-        it.pop("_id", None)
-        if tipo and tipo != "game":
-            it["_tipo"] = "extra"  # dlc, music (soundtrack), demo, etc.
+    # Steam no dice en la búsqueda si algo es juego o DLC: se consulta aparte, todo
+    # junto en una sola llamada (tipo 0 = juego; 1 = demo, 4 = DLC, 11 = banda sonora...).
+    detalles = cacheado(("steam_tipos", tuple(sorted(it["_id"] for it in items))),
+                        lambda: _steam_items([it["_id"] for it in items], pais), ttl=24 * 3600) if items else {}
+    for it in items:
+        d = detalles.get(it.pop("_id", None))
+        if d is not None and d.get("tipo") not in (0, None):
+            it["_tipo"] = "extra"
     return resultado_tienda(
         "Steam", preparar(consulta, items)[:10],
         buscar_url="https://store.steampowered.com/search/?term=" + urllib.parse.quote(consulta),
@@ -1193,8 +1195,10 @@ _pool_sub = ThreadPoolExecutor(max_workers=16)  # separado para evitar bloqueos
 
 def _seguro(nombre, funcion, *args):
     try:
-        r = funcion(*args)
-        return r if isinstance(r, list) else [r]
+        # Memoria corta por tienda: la segunda vuelta y búsquedas repetidas no vuelven a preguntar.
+        r = cacheado(("tienda", nombre, normalizar(str(args[0])), *args[1:]), lambda: funcion(*args), ttl=30 * 60)
+        r = r if isinstance(r, list) else [r]
+        return json.loads(json.dumps(r))  # copia, para que la fusión no cambie lo guardado
     except Exception as e:
         print(f"[{nombre}] {type(e).__name__}: {e}", file=sys.stderr)
         return [resultado_tienda(nombre, error=describir_error(e))]
@@ -1314,16 +1318,24 @@ def buscar_todo(consulta, pais):
             tiendas.extend(t.result())
 
         # Errores de tipeo: si nada coincide bien, probar con la búsqueda corregida.
+        # Las palabras que aparecen en lo que ya devolvieron las tiendas no se corrigen.
+        sumar_vocabulario(r["titulo"] for t in tiendas for r in t["resultados"])
         juegos = detectar_juegos(tiendas)
-        if not juegos or juegos[0]["puntaje"] < 1.4:
+        mejor_original = juegos[0]["puntaje"] if juegos else 0
+        if mejor_original < 1.4:
             corregida = corregir(consulta)
             if corregida != normalizar(consulta):
                 nuevas = []
                 for lista in _pool.map(lambda n: _seguro(n, BUSCADORES[n], corregida, pais), BUSCADORES):
                     nuevas.extend(lista)
-                consulta = corregida
-                corregido[0] = True
-                fusionar(tiendas, nuevas, consulta)
+                prueba = json.loads(json.dumps(tiendas))
+                fusionar(prueba, nuevas, corregida)
+                juegos_corr = detectar_juegos(prueba)
+                # Quedarse con la corrección solo si encuentra algo claramente mejor
+                if juegos_corr and juegos_corr[0]["puntaje"] > mejor_original + 0.2:
+                    tiendas[:] = prueba
+                    consulta = corregida
+                    corregido[0] = True
 
         # Segunda vuelta para no perder juegos que la búsqueda de una tienda escondió.
         extra = []  # (tienda, texto a buscar)
@@ -1337,13 +1349,13 @@ def buscar_todo(consulta, pais):
                 siguiente = _A_ROMANO.get(str(max(numeros) + 1))
                 extra += [(n, f"{consulta} {siguiente}") for n in BUSCADORES]
         # 2) Juegos encontrados en una tienda pero no en otra: buscarlos ahí por su nombre exacto.
-        for g in detectar_juegos(tiendas)[:6]:
+        for g in [g for g in detectar_juegos(tiendas) if g["puntaje"] >= 1.2][:4]:
             for t in tiendas:
                 if t["ok"] and not any(r.get("clave") == g["clave"] for r in t["resultados"]):
                     nombre = next((n for n in BUSCADORES if t["tienda"].startswith(n)), None)
                     if nombre:
                         extra.append((nombre, g["titulo"]))
-        extra = list(dict.fromkeys(extra))[:18]
+        extra = list(dict.fromkeys(extra))[:10]
         if extra:
             for nuevas in _pool.map(lambda e: _seguro(e[0], BUSCADORES[e[0]], e[1], pais), extra):
                 fusionar(tiendas, nuevas, consulta)
