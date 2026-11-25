@@ -1,0 +1,28 @@
+# Revisión diaria: prueba Steam, Xbox, Nintendo, la cotización del dólar y la
+# lista de ofertas. Si algo dejó de funcionar, la tarea falla y GitHub manda un
+# mail avisando, para arreglarlo antes de que se note en la app.
+name: Revisar que las tiendas funcionen
+
+on:
+  schedule:
+    - cron: "7 12 * * *"   # todos los días a las 9:07 hora argentina
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Probar las tiendas
+        run: |
+          # Primero despertar la app por si Render la durmió (tarda hasta ~1 minuto)
+          curl -s --max-time 120 -o /dev/null https://precio-juegos.onrender.com/healthz || true
+          respuesta=$(curl -s --max-time 240 -w "\n%{http_code}" https://precio-juegos.onrender.com/api/estado)
+          codigo=$(echo "$respuesta" | tail -n1)
+          echo "$respuesta" | head -n -1 | python3 -m json.tool || echo "$respuesta"
+          if [ "$codigo" != "200" ]; then
+            echo "::error::Algo dejó de funcionar en la app (HTTP $codigo). Mirá el detalle arriba."
+            exit 1
+          fi
