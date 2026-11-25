@@ -1284,6 +1284,43 @@ def sugerencias(texto, pais="AR"):
     return cacheado(("sugerir", q, pais), traer, ttl=30 * 60)
 
 
+def estado_tiendas(pais="AR"):
+    """Revisión de salud: prueba cada tienda con un juego que está en las tres
+    (Hades), la cotización del dólar y la lista de ofertas. Lo usa la revisión
+    diaria de GitHub para avisar por mail si algo dejó de funcionar."""
+    resultado, ok = {}, True
+    for nombre, f in BUSCADORES.items():
+        try:
+            r = f("Hades", pais)
+            r = r if isinstance(r, list) else [r]
+            bien = any(t["ok"] and any(x.get("clave") == "hades" and x.get("precio") is not None
+                                       for x in t["resultados"]) for t in r)
+            resultado[nombre] = "ok" if bien else "no encontró Hades"
+        except Exception as e:
+            bien = False
+            resultado[nombre] = f"error: {describir_error(e)}"
+        ok = ok and bien
+    try:
+        d = cotizacion_dolar()
+        resultado["Dólar"] = "ok" if d.get("oficial", {}).get("venta") else "sin cotización oficial"
+    except Exception as e:
+        resultado["Dólar"] = f"error: {describir_error(e)}"
+    ok = ok and resultado["Dólar"] == "ok"
+    try:
+        ofertas = mega_descuentos(pais)
+        cuenta = {}
+        for i in ofertas["items"]:
+            cuenta[i["tienda"]] = cuenta.get(i["tienda"], 0) + 1
+        for nombre in BUSCADORES:
+            n = cuenta.get(nombre, 0)
+            resultado[f"Ofertas {nombre}"] = f"ok ({n})" if n else "sin ofertas"
+            ok = ok and n > 0
+    except Exception as e:
+        resultado["Ofertas"] = f"error: {describir_error(e)}"
+        ok = False
+    return {"ok": ok, "detalle": resultado, "hora": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())}
+
+
 BUSCADORES = {"Steam": buscar_steam, "Xbox": buscar_xbox, "Nintendo eShop": buscar_nintendo}
 
 
@@ -2097,6 +2134,9 @@ class Manejador(BaseHTTPRequestHandler):
             if not q:
                 return self._json({"error": "Falta el nombre del juego"}, 400)
             return self._json(buscar_todo(q, pais))
+        if ruta == "/api/estado":
+            r = estado_tiendas()
+            return self._json(r, 200 if r["ok"] else 503)  # 503 hace fallar la revisión de GitHub
         if ruta == "/api/sugerir":
             q = (args.get("q") or [""])[0].strip()[:60]
             return self._json({"sugerencias": sugerencias(q)})
