@@ -2461,6 +2461,7 @@ def revisar_alertas(pais="AR"):
         estado, sha = leer_alertas()
         if not estado.get("chat_id"):
             return None  # todavía no se conectó el chat desde la app
+        antes = json.dumps(estado, sort_keys=True)
         lineas = []
         # 1) Juegos de la lista en oferta
         for j in estado.get("juegos", []):
@@ -2520,19 +2521,22 @@ def revisar_alertas(pais="AR"):
         if lineas:
             lineas.append("\nAbrí la app para ver más: https://precio-juegos.onrender.com")
             enviar_aviso("\n".join(lineas).strip(), estado["chat_id"])
-        guardar_alertas(estado, sha)
+        if json.dumps(estado, sort_keys=True) != antes:  # guardar en GitHub solo si algo cambió
+            guardar_alertas(estado, sha)
         return "\n".join(lineas)
 
 
 def actualizar_lista_alertas(juegos):
     with _alertas_lock:
         estado, sha = leer_alertas()
+        antes = json.dumps(estado, sort_keys=True)
         claves = {j.get("clave") for j in juegos}
         estado["juegos"] = [{"clave": j["clave"], "titulo": j["titulo"], "pais": j.get("pais", "AR")}
                             for j in juegos if j.get("clave") and j.get("titulo")][:100]
         # olvidar lo avisado de juegos que se sacaron de la lista
         estado["avisados"] = {k: v for k, v in estado["avisados"].items() if k.split("|")[0] in claves}
-        guardar_alertas(estado, sha)
+        if json.dumps(estado, sort_keys=True) != antes:
+            guardar_alertas(estado, sha)
         return len(estado["juegos"])
 
 
