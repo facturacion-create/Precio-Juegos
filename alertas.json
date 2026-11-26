@@ -36,10 +36,30 @@
    "pais": "AR"
   }
  ],
- "avisados": {},
- "eventos_vistos": [],
- "resumenes": {},
- "ultimo_resumen": "",
+ "avisados": {
+  "the witcher 3 wild hunt|Xbox": 60,
+  "final fantasy tactics the ivalice chronicles|Steam": 40,
+  "final fantasy tactics the ivalice chronicles|Xbox": 40,
+  "clive barker s hellraiser revival|Steam": 25,
+  "clive barker s hellraiser revival|Xbox": 20
+ },
+ "eventos_vistos": [
+  "Black Friday",
+  "Games in Italy",
+  "astragon Publisher Sale",
+  "Rebajas de la serie Life is Strange"
+ ],
+ "resumenes": {
+  "https://store.steampowered.com/app/1174180/": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/9NP9F7WWKRP1": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/9N0KRV3ZL4GQ": "2026-11-26",
+  "https://www.nintendo.com/us/store/products/mlb-the-show-26-switch/": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/C1SDBNRFXT1D": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/BNKDKQXMXRR2": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/BTC0L0BW6LWC": "2026-11-26",
+  "https://www.xbox.com/es-AR/games/store/x/9NQGGN01771Z": "2026-11-26"
+ },
+ "ultimo_resumen": "2026-11-26",
  "chat_id": 504094538,
  "llave": "qITUGfHrk90KY8oKVX17gYA6133Z6bCh"
 }
