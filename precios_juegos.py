@@ -1927,11 +1927,11 @@ function pintarAvisos() {
   const llave = leer("avisosLlave", "");
   let cuerpo;
   if (!avisosServidor) cuerpo = `<div class="sub">Todavía no están configurados en el servidor.</div>`;
-  else if (llave) cuerpo = `<div class="sub">✅ Activos: te llega un mensaje cuando un juego de tu lista entra en oferta, cuando arranca un evento y un resumen diario de mega ofertas.</div>
+  else if (llave) cuerpo = `<div class="sub">✅ Activos: al momento cuando un juego de tu lista entra en oferta o arranca un evento, y a las 10, 16 y 22 con las ofertas nuevas.</div>
       <div class="acciones"><button class="link-btn" id="avisosPrueba">Mandar mensaje de prueba</button><button class="link-btn" id="avisosApagar">Desactivar</button></div>`;
   else if (avisosVinculo) cuerpo = `<div class="sub">1. Tocá el botón: se abre Telegram en el chat de tu bot.<br>2. Tocá <b>Iniciar</b> (o "Start").<br>3. Volvé acá: se conecta solo.</div>
       <div class="acciones"><a class="sec boton-link" href="${esc(avisosVinculo.link)}" target="_blank" rel="noopener">Abrir Telegram</a><span class="sub">Esperando… (código ${esc(avisosVinculo.codigo)})</span></div>`;
-  else cuerpo = `<div class="sub">Recibí en Telegram las ofertas de tus juegos, los eventos nuevos y un resumen diario.</div>
+  else cuerpo = `<div class="sub">Recibí en Telegram las ofertas de tus juegos y los eventos nuevos al momento, y las ofertas nuevas 3 veces por día.</div>
       <div class="acciones"><span></span><button class="sec" id="avisosActivar">Activar</button></div>`;
   return `<div class="avisos"><b>🔔 Avisos por Telegram</b>${cuerpo}${avisosMsg ? `<div class="sub" style="margin-top:6px">${esc(avisosMsg)}</div>` : ""}</div>`;
 }
@@ -2216,7 +2216,7 @@ class Manejador(BaseHTTPRequestHandler):
                         return self._json({"esperando": True})
                     actualizar_lista_alertas(datos.get("juegos") or [])
                     estado, _ = leer_alertas()
-                    enviar_aviso("✅ *Avisos de Precios de Juegos activados.* Te voy a escribir cuando un juego de tu lista entre en oferta, cuando arranque un evento de ofertas y con un resumen diario de mega ofertas.", estado["chat_id"])
+                    enviar_aviso("✅ *Avisos de Precios de Juegos activados.* Te voy a escribir cuando un juego de tu lista entre en oferta y cuando arranque un evento de ofertas (al momento), y a las 10, 16 y 22 con las ofertas nuevas.", estado["chat_id"])
                     return self._json({"ok": True, "llave": llave})
                 if not llave_valida(str(datos.get("llave", ""))):
                     return self._json({"error": "Los avisos no están conectados en este celular. Tocá Activar."}, 403)
@@ -2298,6 +2298,7 @@ class Manejador(BaseHTTPRequestHandler):
 # Para probar en la compu: ALERTAS_ARCHIVO=archivo.json y TELEGRAM_PRUEBA=1.
 
 REPO_ALERTAS = os.environ.get("REPO_ALERTAS", "facturacion-create/Precio-Juegos")
+HORARIOS_OFERTAS_NUEVAS = (10, 16, 22)  # horas (Argentina) del aviso de ofertas nuevas
 RAMA_ALERTAS = "datos-alertas"
 _alertas_lock = threading.Lock()
 
@@ -2376,7 +2377,7 @@ def _github(metodo, ruta, datos=None):
 
 def leer_alertas():
     """(estado, sha). Estado vacío si todavía no existe."""
-    vacio = {"juegos": [], "avisados": {}, "eventos_vistos": [], "resumenes": {}, "ultimo_resumen": "",
+    vacio = {"juegos": [], "avisados": {}, "eventos_vistos": [], "ofertas_vistas": [], "ultimo_turno": None,
              "chat_id": None, "llave": ""}
     archivo = os.environ.get("ALERTAS_ARCHIVO")
     if archivo:
@@ -2497,27 +2498,40 @@ def revisar_alertas(pais="AR"):
         vigentes = {e["nombre"] for e in ofertas.get("eventos", [])}
         if ofertas.get("eventos") is not None:  # olvidar los que terminaron (por si vuelven)
             estado["eventos_vistos"] = [n for n in estado["eventos_vistos"] if n in vigentes]
-        # 3) Resumen diario de mega ofertas populares (después de las 10 de Argentina)
-        hoy = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 3 * 3600))
-        hora_ar = time.gmtime(time.time() - 3 * 3600).tm_hour
-        if ofertas.get("items") and estado.get("ultimo_resumen") != hoy and hora_ar >= 10:
-            limite = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 14 * 86400))
-            estado["resumenes"] = {k: v for k, v in estado["resumenes"].items() if v >= limite}
-            candidatos, vistos = [], set()
-            for i in sorted((i for i in ofertas["items"] if i["descuento"] >= 75 and i["url"] not in estado["resumenes"]),
-                            key=lambda i: (i.get("pop", 1), -i["descuento"])):
-                c = clave(i["titulo"])  # un solo renglón por juego (no uno por tienda o edición)
-                if c not in vistos:
-                    vistos.add(c)
-                    candidatos.append(i)
-                if len(candidatos) == 8:
-                    break
-            if candidatos:
-                lineas += ["", "💥 *Mega ofertas populares de hoy*"]
-                for i in candidatos:
-                    lineas.append(f'• {i["titulo"]}: -{i["descuento"]}% en {i["tienda"]} → {_precio_final(i["precio"], i["moneda"])}')
-                    estado["resumenes"][i["url"]] = hoy
-            estado["ultimo_resumen"] = hoy
+        # 3) Ofertas nuevas: 3 veces por día, las que aparecieron desde el aviso anterior
+        #    (detecta cuando una tienda libera varias ofertas o bajan precios de golpe).
+        ahora_ar = time.gmtime(time.time() - 3 * 3600)
+        turnos = [h for h in HORARIOS_OFERTAS_NUEVAS if h <= ahora_ar.tm_hour]
+        turno = f'{time.strftime("%Y-%m-%d", ahora_ar)}-{turnos[-1]}' if turnos else None
+        items = ofertas.get("items") or []
+        if items:
+            import hashlib
+            marca = lambda i: hashlib.sha1(f'{i["url"]}|{i["descuento"]}'.encode()).hexdigest()[:10]
+            vistas = set(estado.get("ofertas_vistas") or [])
+            if not vistas:
+                estado["ofertas_vistas"] = sorted(marca(i) for i in items)  # primera vez: punto de partida
+                estado["ultimo_turno"] = turno
+            elif turno and estado.get("ultimo_turno") != turno:
+                nuevas, juegos_vistos = [], set()
+                for i in sorted((i for i in items if marca(i) not in vistas and i["descuento"] >= 40),
+                                key=lambda i: (i.get("pop", 1), -i["descuento"])):
+                    c = clave(i["titulo"])  # un renglón por juego, no uno por tienda o edición
+                    if c not in juegos_vistos:
+                        juegos_vistos.add(c)
+                        nuevas.append(i)
+                if nuevas:
+                    hora = int(turno.rsplit("-", 1)[1])
+                    lineas += ["", f"🆕 *Ofertas nuevas* ({len(nuevas)} desde el último aviso)" if hora else "🆕 *Ofertas nuevas*"]
+                    for i in nuevas[:10]:
+                        fin = f' (hasta el {_fecha_corta(i["termina"])})' if i.get("termina") else ""
+                        lineas.append(f'• {i["titulo"]}: -{i["descuento"]}% en {i["tienda"]} → {_precio_final(i["precio"], i["moneda"])}{fin}')
+                    if len(nuevas) > 10:
+                        lineas.append(f"…y {len(nuevas) - 10} más en la app (Mega descuentos)")
+                # Recordar solo las ofertas vigentes (así el archivo no crece)
+                estado["ofertas_vistas"] = sorted(marca(i) for i in items)
+                estado["ultimo_turno"] = turno
+        estado.pop("resumenes", None)
+        estado.pop("ultimo_resumen", None)
         if lineas:
             lineas.append("\nAbrí la app para ver más: https://precio-juegos.onrender.com")
             enviar_aviso("\n".join(lineas).strip(), estado["chat_id"])
