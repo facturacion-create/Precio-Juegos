@@ -2567,6 +2567,23 @@ def _precio_final(precio, moneda):
     return "$ " + f"{precio * 1.23:,.0f}".replace(",", ".")
 
 
+CONSOLAS = (("Steam", "🖥️ *Steam* (PC)"), ("Xbox", "🟢 *Xbox*"), ("Nintendo", "🔴 *Nintendo Switch*"))
+
+
+def _por_consola(filas, maximo=None):
+    """Agrupa renglones (tienda, texto) bajo un título por consola: Steam, Xbox, Nintendo."""
+    salida = []
+    for prefijo, titulo in CONSOLAS:
+        suyas = [txt for tienda, txt in filas if tienda.startswith(prefijo)]
+        if not suyas:
+            continue
+        salida += ["", titulo]
+        salida += suyas[:maximo] if maximo else suyas
+        if maximo and len(suyas) > maximo:
+            salida.append(f"   …y {len(suyas) - maximo} más en la app")
+    return salida
+
+
 def _fecha_corta(iso):
     try:
         return f"{int(iso[8:10])}/{int(iso[5:7])}"
@@ -2583,7 +2600,7 @@ def revisar_alertas(pais="AR"):
         if not estado.get("chat_id"):
             return None  # todavía no se conectó el chat desde la app
         antes = json.dumps(estado, sort_keys=True)
-        lineas = []
+        lineas, mis_ofertas = [], []
         # 1) Juegos de la lista en oferta
         for j in estado.get("juegos", []):
             try:
@@ -2602,19 +2619,23 @@ def revisar_alertas(pais="AR"):
                 if estado["avisados"].get(clave_aviso, 0) >= pct:
                     continue  # ya avisado (o era mejor oferta)
                 estado["avisados"][clave_aviso] = pct
-                fin = f' (hasta el {_fecha_corta(r["termina"])})' if r.get("termina") else ""
-                lineas.append(f'🔥 *{j["titulo"]}*: -{pct}% en {t["tienda"]} → {_precio_final(r["precio"], r["moneda"])}{fin}')
-        if lineas:
-            lineas.insert(0, "⭐ *Tus juegos en oferta*")
+                fin = f' · hasta el {_fecha_corta(r["termina"])}' if r.get("termina") else ""
+                mis_ofertas.append((t["tienda"], f'• *{j["titulo"]}*  -{pct}% → {_precio_final(r["precio"], r["moneda"])}{fin}'))
+        if mis_ofertas:
+            lineas += ["⭐ *TUS JUEGOS EN OFERTA*"] + _por_consola(mis_ofertas)
         # 2) Eventos nuevos
         ofertas = _ofertas_listas.get(pais) or {}
         nuevos = [e for e in ofertas.get("eventos", []) if e["nombre"] not in estado["eventos_vistos"]]
         if nuevos:
-            lineas += ["", "🎉 *Eventos de ofertas nuevos*"]
+            if lineas:
+                lineas += ["", "━━━━━━━━━━", ""]
+            filas = []
             for e in nuevos:
-                fin = f', hasta el {_fecha_corta(e["termina"])}' if e.get("termina") else ""
-                lineas.append(f'• {e["nombre"]} en {", ".join(e["tiendas"])} ({e["n"]} ofertas{fin})')
+                fin = f' · hasta el {_fecha_corta(e["termina"])}' if e.get("termina") else ""
+                for tienda in e["tiendas"]:
+                    filas.append((tienda, f'• {e["nombre"]} ({e["n"]} ofertas{fin})'))
                 estado["eventos_vistos"].append(e["nombre"])
+            lineas += ["🎉 *EVENTOS DE OFERTAS NUEVOS*"] + _por_consola(filas)
         vigentes = {e["nombre"] for e in ofertas.get("eventos", [])}
         if ofertas.get("eventos") is not None:  # olvidar los que terminaron (por si vuelven)
             estado["eventos_vistos"] = [n for n in estado["eventos_vistos"] if n in vigentes]
@@ -2635,25 +2656,25 @@ def revisar_alertas(pais="AR"):
                 nuevas, juegos_vistos = [], set()
                 for i in sorted((i for i in items if marca(i) not in vistas and i["descuento"] >= 40),
                                 key=lambda i: (i.get("pop", 1), -i["descuento"])):
-                    c = clave(i["titulo"])  # un renglón por juego, no uno por tienda o edición
+                    c = (clave(i["titulo"]), i["tienda"].split()[0])  # un renglón por juego en cada consola
                     if c not in juegos_vistos:
                         juegos_vistos.add(c)
                         nuevas.append(i)
                 if nuevas:
-                    hora = int(turno.rsplit("-", 1)[1])
-                    lineas += ["", f"🆕 *Ofertas nuevas* ({len(nuevas)} desde el último aviso)" if hora else "🆕 *Ofertas nuevas*"]
-                    for i in nuevas[:10]:
-                        fin = f' (hasta el {_fecha_corta(i["termina"])})' if i.get("termina") else ""
-                        lineas.append(f'• {i["titulo"]}: -{i["descuento"]}% en {i["tienda"]} → {_precio_final(i["precio"], i["moneda"])}{fin}')
-                    if len(nuevas) > 10:
-                        lineas.append(f"…y {len(nuevas) - 10} más en la app (Mega descuentos)")
+                    if lineas:
+                        lineas += ["", "━━━━━━━━━━", ""]
+                    filas = []
+                    for i in nuevas:
+                        fin = f' · hasta el {_fecha_corta(i["termina"])}' if i.get("termina") else ""
+                        filas.append((i["tienda"], f'• {i["titulo"]}  -{i["descuento"]}% → {_precio_final(i["precio"], i["moneda"])}{fin}'))
+                    lineas += [f"🆕 *OFERTAS NUEVAS* ({len(nuevas)})"] + _por_consola(filas, maximo=6)
                 # Recordar solo las ofertas vigentes (así el archivo no crece)
                 estado["ofertas_vistas"] = sorted(marca(i) for i in items)
                 estado["ultimo_turno"] = turno
         estado.pop("resumenes", None)
         estado.pop("ultimo_resumen", None)
         if lineas:
-            lineas.append("\nAbrí la app para ver más: https://precio-juegos.onrender.com")
+            lineas += ["", "👉 Ver todo en la app: https://precio-juegos.onrender.com"]
             enviar_aviso("\n".join(lineas).strip(), estado["chat_id"])
         if json.dumps(estado, sort_keys=True) != antes:  # guardar en GitHub solo si algo cambió
             guardar_alertas(estado, sha)

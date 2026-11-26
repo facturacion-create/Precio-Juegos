@@ -29,7 +29,7 @@ App de comparación de precios de juegos (Steam / Xbox / Nintendo eShop, Argenti
 ## Ofertas y avisos
 - `armar_ofertas()` arma en segundo plano (hilo `precalentar_descuentos`, cada ~55 min): Steam + Nintendo + Xbox (xbox.com + respaldo). `/api/descuentos` nunca bloquea: devuelve `{"cargando": true}` mientras arma; el front reintenta y muestra la última lista guardada en localStorage.
 - `marcar_recientes()`: `desde` = inicio real (Nintendo) o primera vez vista (persistido en `primera_vez.json`).
-- `revisar_alertas()` (cada hora): juegos de la lista en oferta + eventos nuevos (al momento) y "ofertas nuevas" en `HORARIOS_OFERTAS_NUEVAS` (10, 16, 22 AR). Guarda en GitHub solo si cambió algo. Vinculación de Telegram: `/api/alertas/vincular` → link `t.me/<bot>?start=<código>` → `/api/alertas/confirmar` lee `getUpdates`.
+- `revisar_alertas()` (cada hora): juegos de la lista en oferta + eventos nuevos (al momento) y "ofertas nuevas" en `HORARIOS_OFERTAS_NUEVAS` (10, 16, 22 AR), agrupado por consola (`_por_consola`, `CONSOLAS`). Guarda en GitHub solo si cambió algo. Vinculación de Telegram: `/api/alertas/vincular` → link `t.me/<bot>?start=<código>` → `/api/alertas/confirmar` lee `getUpdates`.
 
 ## Front (JS dentro de `HTML`)
 - Un solo listener de clicks en `#res` con una **lista blanca de selectores** (`closest("...")`): al agregar botones nuevos, sumar su id/atributo ahí o no responden.
