@@ -657,6 +657,7 @@ def _nintendo_precios(nsuids, pais):
             "precio_original": regular if oferta else None,
             "moneda": p["regular_price"].get("currency", ""),
             "termina": (oferta or {}).get("end_datetime"),  # cuándo termina la oferta
+            "empieza": (oferta or {}).get("start_datetime"),  # cuándo empezó (solo Nintendo lo informa)
         }
     return precios
 
@@ -920,6 +921,7 @@ def _descuentos_nintendo(pais, minimo):
                 salida.append({
                     "tienda": nombre, **juegos[nsuid], "precio": pr["precio"],
                     "precio_original": pr["precio_original"], "moneda": pr["moneda"], "termina": pr.get("termina"),
+                    "desde": pr.get("empieza"),
                     "descuento": pct, "acepta_global": region == "US" and pais == "AR",
                 })
     _popularidad(salida, "_rango")
@@ -1480,7 +1482,11 @@ HTML = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;padding-top:max(16px,env(safe-area-inset-top));padding-bottom:40px}
 main{max-width:640px;margin:0 auto}
-h1{font-size:1.25rem;margin:4px 0 12px}
+h1{font-size:1.2rem;margin:0;cursor:pointer}
+.cabecera{display:flex;justify-content:space-between;align-items:center;margin:2px 0 12px}
+.btn-ajustes{background:var(--card);border:1px solid var(--borde);color:var(--txt);border-radius:12px;padding:6px 10px;font-size:1rem}
+.ajustes>summary{display:none}
+.ajustes[open]{background:var(--card);border:1px solid var(--borde);border-radius:14px;padding:10px 12px 12px}
 h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);margin:22px 0 8px;font-weight:600}
 a{color:inherit}
 form{display:flex;gap:8px}
@@ -1585,13 +1591,18 @@ details>summary::-webkit-details-marker{display:none}
 .alerta-item .p{font-weight:700;white-space:nowrap}
 .nuevo{background:var(--ok);color:#fff;border-radius:6px;padding:1px 5px;font-size:.68rem;font-weight:700;vertical-align:middle}
 .enoferta{color:var(--ok);font-weight:600}
-.tabs{display:flex;gap:6px;margin-top:18px;border-bottom:1px solid var(--borde)}
-.tab{background:none;color:var(--sub);border:none;border-bottom:2px solid transparent;border-radius:0;padding:10px 8px;font-weight:600}
-.tab.activa{color:var(--txt);border-bottom-color:var(--acento)}
+.tabs{display:flex;gap:4px;margin-top:16px;background:var(--card);border:1px solid var(--borde);border-radius:14px;padding:4px}
+.tab{flex:1;background:none;color:var(--sub);border:none;border-radius:10px;padding:9px 6px;font-weight:600;font-size:.92rem}
+.tab.activa{background:var(--acento);color:#fff}
 .filtros{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 8px}
 .filtros.desliza{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;margin-right:-16px;padding-right:16px}
 .filtros.desliza .chip{flex:none}
 .chip.activa{background:var(--acento);border-color:var(--acento);color:#fff}
+.ordenes{display:flex;gap:4px;overflow-x:auto;margin:14px -16px 2px 0;padding:0 16px 2px 0;scrollbar-width:none}
+.ordenes::-webkit-scrollbar{display:none}
+.orden{flex:none;background:none;color:var(--sub);border:none;border-radius:99px;padding:7px 12px;font-size:.88rem;font-weight:600}
+.orden.activa{background:var(--acento);color:#fff}
+.grupo{padding:10px 14px 6px;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);background:var(--bg);border-bottom:1px solid var(--borde)}
 .barra-filtros{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:12px -16px 4px 0;padding:0 16px 4px 0;scrollbar-width:none}
 .barra-filtros::-webkit-scrollbar{display:none}
 .pill{position:relative;flex:none;display:inline-flex;align-items:center;border:1px solid var(--borde);background:var(--card);border-radius:99px;padding:7px 26px 7px 12px;font-size:.86rem;white-space:nowrap;color:var(--txt)}
@@ -1621,7 +1632,7 @@ details>summary::-webkit-details-marker{display:none}
 </head>
 <body>
 <main>
-<h1>🎮 Precios de Juegos</h1>
+<header class="cabecera"><h1>🎮 Precios de Juegos</h1><button type="button" class="btn-ajustes" id="btnAjustes" aria-label="Ajustes">⚙️</button></header>
 <form id="f">
   <div class="campo">
     <input id="q" type="search" placeholder="¿Qué juego buscás?" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" required>
@@ -1802,7 +1813,7 @@ function alternarGuardado(clave) {
 }
 
 let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "") || 50), filtroTienda = leer("filtroTienda", "") || "todas", mostrarOfertas = 40;
-let ordenOfertas = leer("ordenOfertas", "") || "descuento", filtroGenero = leer("filtroGenero", "") || "todos", filtroEvento = leer("filtroEvento", "") || "todos";
+let ordenOfertas = leer("ordenOfertas", "") || "recientes", filtroGenero = leer("filtroGenero", "") || "todos", filtroEvento = leer("filtroEvento", "") || "todos";
 
 // "Termina el 25/11" si la oferta vence en los próximos 15 días
 function terminaTexto(iso) {
@@ -1859,6 +1870,7 @@ function pintarOfertas() {
   let lista = ofertas.items.filter(i => i.descuento >= filtroPct && (filtroTienda === "todas" || i.tienda === filtroTienda)
     && (filtroGenero === "todos" || (i.generos || []).includes(filtroGenero))
     && (filtroEvento === "todos" || (i.eventos || []).includes(filtroEvento)));
+  if (ordenOfertas === "recientes") lista = [...lista].sort((a, b) => (b.desde || "") > (a.desde || "") ? 1 : (b.desde || "") < (a.desde || "") ? -1 : (a.pop ?? 1) - (b.pop ?? 1));
   if (ordenOfertas === "populares") lista = [...lista].sort((a, b) => (a.pop ?? 1) - (b.pop ?? 1) || b.descuento - a.descuento);
   if (ordenOfertas === "termina") lista = [...lista].sort((a, b) => (a.termina || "9") < (b.termina || "9") ? -1 : (a.termina || "9") > (b.termina || "9") ? 1 : b.descuento - a.descuento);
   if (ordenOfertas === "barato") lista = [...lista].sort((a, b) => calcular(a).valor - calcular(b).valor);
@@ -1873,8 +1885,9 @@ function pintarOfertas() {
   };
   const evSel = eventos.find(e => e.nombre === filtroEvento);
   const hayFiltros = filtroPct != 50 || filtroTienda !== "todas" || filtroGenero !== "todos" || filtroEvento !== "todos";
-  let html = `<div class="barra-filtros">
-    ${pastilla("orden", ordenOfertas, "descuento", [["descuento", "🔥 Mayor descuento"], ["populares", "⭐ Más vendidos"], ["termina", "⏰ Terminan pronto"], ["barato", "💲 Más baratos"]])}
+  const ordenes = [["recientes", "🆕 Recientes"], ["populares", "⭐ Más vendidos"], ["descuento", "🔥 Mayor descuento"], ["termina", "⏰ Terminan pronto"], ["barato", "💲 Más baratos"]];
+  let html = `<div class="ordenes">${ordenes.map(([v, t]) => `<button class="orden${v === ordenOfertas ? " activa" : ""}" data-orden="${v}">${t}</button>`).join("")}</div>
+  <div class="barra-filtros">
     ${eventos.length ? pastilla("evento", filtroEvento, "todos", [["todos", "🎉 Eventos", "Todos los eventos"], ...eventos.map(e => [e.nombre, `${icono(e.nombre)} ${e.nombre}`, `${icono(e.nombre)} ${e.nombre} · ${e.tiendas.map(corto).join(", ")} (${e.n})`])]) : ""}
     ${pastilla("pct", filtroPct, 50, [30, 50, 70, 90].map(p => [p, `-${p}% o más`]))}
     ${pastilla("tienda", filtroTienda, "todas", [["todas", "Tiendas", "Todas las tiendas"], ...tiendas.map(t => [t, corto(t)])])}
@@ -1882,12 +1895,26 @@ function pintarOfertas() {
   </div>
   <div class="resumen-filtros">${ofertas.vieja ? "Actualizando… · " : ""}${lista.length} ofertas${evSel && terminaTexto(evSel.termina) ? ` · <span class="vence">${esc(terminaTexto(evSel.termina))}</span>` : ""}${hayFiltros ? ` · <button class="link-btn" id="limpiarFiltros">Limpiar filtros</button>` : ""}</div>`;
 
+  // En "Recientes", separar por Hoy / Ayer / Esta semana / Antes
+  const grupoDe = i => {
+    if (!i.desde) return "Antes";
+    const d = new Date(i.desde), hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+    const dias = Math.floor((hoy - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+    return dias <= 0 ? "Hoy" : dias === 1 ? "Ayer" : dias < 7 ? "Esta semana" : "Antes";
+  };
+  let grupoActual = null;
   html += lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
+      let titulo = "";
+      if (ordenOfertas === "recientes") {
+        const g = grupoDe(i);
+        if (g !== grupoActual) { grupoActual = g; titulo = `<div class="grupo">${g}</div>` }
+      }
       const c = calcular(i), vence = terminaTexto(i.termina);
+      const nueva = i.desde && Date.now() - new Date(i.desde) < 864e5;
       const extra = [corto(i.tienda), ...(i.eventos || []).map(e => icono(e))].join(" · ");
-      return `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
+      return titulo + `<div class="oferta" data-buscar="${esc(i.titulo.replace(/\s*\(Switch 2\)$/, ""))}">
         <span class="mini-wrap">${img(i.mini, "mini")}<span class="pct">-${i.descuento}%</span></span>
-        <span class="info"><div class="nom">${esc(i.titulo)}</div><div class="sub">${esc(extra)}${vence ? ` · <span class="vence">${esc(vence)}</span>` : ""}</div></span>
+        <span class="info"><div class="nom">${nueva ? '<span class="nuevo">NUEVA</span> ' : ""}${esc(i.titulo)}</div><div class="sub">${esc(extra)}${vence ? ` · <span class="vence">${esc(vence)}</span>` : ""}</div></span>
         <span class="p">${fmt(c.valor, c.moneda)}${c.original ? `<small>${fmt(c.original, c.moneda)}</small>` : ""}</span></div>`;
     }).join("")}</div>
     ${lista.length > mostrarOfertas ? `<div class="acciones"><span></span><button class="sec" id="masOfertas">Ver más (${lista.length - mostrarOfertas})</button></div>` : ""}`
@@ -2126,8 +2153,9 @@ $("#sug").addEventListener("pointerdown", e => e.preventDefault());  // que el c
 $("#sug").addEventListener("click", e => { const b = e.target.closest("[data-sug]"); if (b) buscar(b.dataset.sug) });
 $("#q").addEventListener("blur", () => setTimeout(ocultarSugerencias, 150));
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros,#verTodos,#avisosActivar,#avisosPrueba,#avisosApagar");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],[data-orden],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros,#verTodos,#avisosActivar,#avisosPrueba,#avisosApagar");
   if (!el) return;
+  if (el.dataset.orden) { ordenOfertas = el.dataset.orden; guardar("ordenOfertas", ordenOfertas); mostrarOfertas = 40; pintar(); return }
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
   else if (el.dataset.evento) { filtroEvento = el.dataset.evento; guardar("filtroEvento", filtroEvento); mostrarOfertas = 40; pintar() }
@@ -2163,6 +2191,7 @@ $("#res").addEventListener("click", e => {
 $("#pais").addEventListener("change", () => { guardar("pais", $("#pais").value); actualizarAjustes(); const q = $("#q").value.trim(); if (q && ultimo) buscar(q); else pintar() });
 $("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); actualizarAjustes(); pintar() });
 $("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarAjustes(); pintar() });
+$("#btnAjustes").addEventListener("click", () => { $("#ajustes").open = !$("#ajustes").open });
 $("h1").addEventListener("click", () => { if (history.state && history.state.q) history.back(); else irAlInicio() });
 window.addEventListener("popstate", e => { if (e.state && e.state.q) buscar(e.state.q, true); else irAlInicio() });
 actualizarAjustes(); pintar(); cargarDolar().then(revisarSiHaceFalta); estadoAvisos();
@@ -2299,6 +2328,97 @@ class Manejador(BaseHTTPRequestHandler):
 
 REPO_ALERTAS = os.environ.get("REPO_ALERTAS", "facturacion-create/Precio-Juegos")
 HORARIOS_OFERTAS_NUEVAS = (10, 16, 22)  # horas (Argentina) del aviso de ofertas nuevas
+
+
+def _hay_donde_guardar():
+    return bool(os.environ.get("GITHUB_TOKEN_ALERTAS") or os.environ.get("ALERTAS_ARCHIVO"))
+
+
+def _leer_archivo(nombre):
+    """(datos, sha) de un archivo JSON de la rama datos-alertas (o (None, None) si no existe)."""
+    local = os.environ.get("ALERTAS_ARCHIVO")
+    if local:
+        try:
+            with open(os.path.join(os.path.dirname(local) or ".", nombre)) as f:
+                return json.load(f), None
+        except OSError:
+            return None, None
+    try:
+        import base64
+        r = _github("GET", f"contents/{nombre}?ref={RAMA_ALERTAS}")
+        return json.loads(base64.b64decode(r["content"]).decode()), r["sha"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, None
+        raise
+
+
+def _guardar_archivo(nombre, datos, sha):
+    local = os.environ.get("ALERTAS_ARCHIVO")
+    texto = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
+    if local:
+        with open(os.path.join(os.path.dirname(local) or ".", nombre), "w") as f:
+            f.write(texto)
+        return None
+    import base64
+    try:
+        _github("GET", f"git/ref/heads/{RAMA_ALERTAS}")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        base = _github("GET", "git/ref/heads/main")["object"]["sha"]
+        _github("POST", "git/refs", {"ref": f"refs/heads/{RAMA_ALERTAS}", "sha": base})
+    cuerpo = {"message": f"Actualizar {nombre}", "branch": RAMA_ALERTAS,
+              "content": base64.b64encode(texto.encode()).decode()}
+    if sha:
+        cuerpo["sha"] = sha
+    try:
+        return _github("PUT", f"contents/{nombre}", cuerpo).get("content", {}).get("sha")
+    except urllib.error.HTTPError as e:
+        if e.code not in (409, 422):
+            raise
+        # No sabíamos la versión actual del archivo: buscarla y reintentar una vez
+        cuerpo["sha"] = _github("GET", f"contents/{nombre}?ref={RAMA_ALERTAS}")["sha"]
+        return _github("PUT", f"contents/{nombre}", cuerpo).get("content", {}).get("sha")
+
+
+# Cuándo se vio cada oferta por primera vez (Steam y Xbox no lo informan; Nintendo sí).
+_primera_vez = {"datos": None, "sha": None}
+
+
+def marcar_recientes(items):
+    """Pone en cada oferta 'desde' = cuándo empezó (Nintendo) o cuándo la vimos por
+    primera vez. La primera vez de todas no se sabe: queda sin fecha ('antes')."""
+    import hashlib
+    marca = lambda i: hashlib.sha1(f'{i["url"]}|{i["descuento"]}'.encode()).hexdigest()[:10]
+    if _primera_vez["datos"] is None:
+        try:
+            _primera_vez["datos"], _primera_vez["sha"] = _leer_archivo("primera_vez.json") if _hay_donde_guardar() else (None, None)
+        except Exception as e:
+            print(f"[recientes] {type(e).__name__}: {e}", file=sys.stderr)
+        punto_de_partida = _primera_vez["datos"] is None
+        _primera_vez["datos"] = _primera_vez["datos"] or {}
+    else:
+        punto_de_partida = False
+    vistos = _primera_vez["datos"]
+    ahora = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    nuevos = {}
+    for i in items:
+        m = marca(i)
+        cuando = vistos.get(m, "")
+        if m not in vistos:
+            cuando = "" if punto_de_partida else ahora  # la primera vez no sabemos desde cuándo
+        nuevos[m] = cuando
+        if not i.get("desde"):  # Nintendo ya trae la fecha real
+            i["desde"] = cuando or None
+    cambio = set(nuevos) != set(vistos)
+    _primera_vez["datos"] = nuevos  # solo las ofertas vigentes: el archivo no crece
+    if cambio and _hay_donde_guardar():
+        try:
+            _primera_vez["sha"] = _guardar_archivo("primera_vez.json", nuevos, _primera_vez["sha"])
+        except Exception as e:
+            print(f"[recientes] {type(e).__name__}: {e}", file=sys.stderr)
+            _primera_vez["sha"] = None
 RAMA_ALERTAS = "datos-alertas"
 _alertas_lock = threading.Lock()
 
@@ -2570,6 +2690,7 @@ def armar_ofertas(pais):
         with _cache_lock:
             _cache.pop(("descuentos", pais, 30), None)
         datos = dict(mega_descuentos(pais), actualizado=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        marcar_recientes(datos["items"])
         _ofertas_listas[pais] = datos
     except Exception as e:
         print(f"[ofertas {pais}] {type(e).__name__}: {e}", file=sys.stderr)
