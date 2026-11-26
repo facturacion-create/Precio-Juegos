@@ -1,5 +1,41 @@
 {
- "juegos": [],
+ "juegos": [
+  {
+   "clave": "the witcher 3 wild hunt",
+   "titulo": "The Witcher 3: Wild Hunt — Remastered",
+   "pais": "AR"
+  },
+  {
+   "clave": "final fantasy tactics the ivalice chronicles",
+   "titulo": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
+   "pais": "AR"
+  },
+  {
+   "clave": "final fantasy resonance",
+   "titulo": "FINAL FANTASY RESONANCE",
+   "pais": "AR"
+  },
+  {
+   "clave": "reanimal",
+   "titulo": "REANIMAL",
+   "pais": "AR"
+  },
+  {
+   "clave": "silver pines",
+   "titulo": "Silver Pines",
+   "pais": "AR"
+  },
+  {
+   "clave": "onimusha way of the sword",
+   "titulo": "Onimusha: Way of the Sword",
+   "pais": "AR"
+  },
+  {
+   "clave": "clive barker s hellraiser revival",
+   "titulo": "Clive Barker's Hellraiser: Revival",
+   "pais": "AR"
+  }
+ ],
  "avisados": {},
  "eventos_vistos": [],
  "resumenes": {},
