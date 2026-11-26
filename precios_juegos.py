@@ -1611,6 +1611,8 @@ details>summary::-webkit-details-marker{display:none}
 .oferta .vence{font-size:.75rem;color:var(--warn);font-weight:600}
 .oferta .p{text-align:right;white-space:nowrap;font-weight:700}
 .oferta .p small{display:block;font-weight:400;font-size:.75rem;color:var(--sub);text-decoration:line-through}
+.avisos{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:12px 14px;margin-top:16px}
+.avisos .sub{font-size:.85rem;color:var(--sub);margin-top:4px}
 .vacio,.cargando{color:var(--sub);text-align:center;padding:28px 10px}
 .error{color:var(--err)}
 .pie{color:var(--sub);font-size:.76rem;margin-top:24px}
@@ -1795,7 +1797,7 @@ function alternarGuardado(clave) {
   let b = biblioteca();
   if (enBiblioteca(clave)) b = b.filter(j => !(j.clave === clave && j.pais === $("#pais").value));
   else b.unshift({clave, titulo: g.titulo, mini: g.mini, pais: $("#pais").value, mejor: mejorOpcion(ultimo, clave), oferta: mejorOferta(ultimo, clave), fecha: Date.now()});
-  guardarBiblioteca(b); pintar();
+  guardarBiblioteca(b); pintar(); sincronizarAvisos();
 }
 
 let vista = leer("vista", "mis"), ofertas = null, filtroPct = Number(leer("filtroPct", "") || 50), filtroTienda = leer("filtroTienda", "") || "todas", mostrarOfertas = 40;
@@ -1909,7 +1911,38 @@ function pintarBiblioteca() {
       <div class="p">${j.mejor ? fmt(j.mejor.valor, j.mejor.moneda) : "—"}${cambio}</div>
       <button class="x" data-borrar="${i}" aria-label="Quitar">✕</button></div>`;
   }).join("")}</div>
-  <div class="acciones"><span class="sub" style="font-size:.78rem;color:var(--sub)">${revisando ? esc(revisando) : "Se revisan solos al abrir la app. Se guarda en este celular."}</span><button class="sec" id="actualizarTodo"${revisando ? " disabled" : ""}>↻ Actualizar</button></div>`;
+  <div class="acciones"><span class="sub" style="font-size:.78rem;color:var(--sub)">${revisando ? esc(revisando) : "Se revisan solos al abrir la app. Se guarda en este celular."}</span><button class="sec" id="actualizarTodo"${revisando ? " disabled" : ""}>↻ Actualizar</button></div>
+  ${pintarAvisos()}`;
+}
+
+/* ---------- Avisos por WhatsApp ---------- */
+let avisosServidor = null, avisosMsg = "";
+async function estadoAvisos() {
+  try { avisosServidor = (await (await fetch("/api/alertas/estado")).json()).configurado } catch { avisosServidor = false }
+  if (!ultimo && vista === "mis") pintar();
+}
+function pintarAvisos() {
+  if (avisosServidor === null) return "";
+  const clave = leer("avisosClave", "");
+  let cuerpo;
+  if (!avisosServidor) cuerpo = `<div class="sub">Todavía no están configurados en el servidor.</div>`;
+  else if (clave) cuerpo = `<div class="sub">✅ Activos: te llega un WhatsApp cuando un juego de tu lista entra en oferta, cuando arranca un evento y un resumen diario de mega ofertas.</div>
+      <div class="acciones"><button class="link-btn" id="avisosPrueba">Mandar mensaje de prueba</button><button class="link-btn" id="avisosApagar">Desactivar</button></div>`;
+  else cuerpo = `<div class="sub">Ingresá la clave (apikey) que te dio CallMeBot.</div>
+      <div class="acciones"><input id="avisosClave" type="password" placeholder="Clave de CallMeBot" autocomplete="off" style="flex:1;padding:9px 12px;font-size:16px"><button class="sec" id="avisosActivar">Activar</button></div>`;
+  return `<div class="avisos"><b>🔔 Avisos por WhatsApp</b>${cuerpo}${avisosMsg ? `<div class="sub" style="margin-top:6px">${esc(avisosMsg)}</div>` : ""}</div>`;
+}
+async function avisosEnviar(ruta, clave, extra = {}) {
+  const r = await fetch(ruta, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({clave, ...extra})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || "No se pudo");
+  return d;
+}
+// Manda la lista de Mis juegos al servidor (si los avisos están activos)
+async function sincronizarAvisos() {
+  const clave = leer("avisosClave", "");
+  if (!clave || !avisosServidor) return;
+  try { await avisosEnviar("/api/alertas", clave, {juegos: biblioteca().map(j => ({clave: j.clave, titulo: j.titulo, pais: j.pais}))}) } catch {}
 }
 
 /* ---------- Alertas de ofertas de Mis juegos ---------- */
@@ -2094,7 +2127,24 @@ $("#res").addEventListener("click", e => {
   }
   else if (el.id === "masOfertas") { mostrarOfertas += 40; pintar() }
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar, false, el.dataset.clave) }
-  else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar() }
+  else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar(); sincronizarAvisos() }
+  else if (el.id === "avisosActivar") {
+    const clave = $("#avisosClave").value.trim(); if (!clave) return;
+    avisosMsg = "Activando…"; pintar();
+    avisosEnviar("/api/alertas", clave, {juegos: biblioteca().map(j => ({clave: j.clave, titulo: j.titulo, pais: j.pais}))})
+      .then(() => avisosEnviar("/api/alertas/prueba", clave))
+      .then(() => { guardar("avisosClave", clave); avisosMsg = "Listo: te mandé un WhatsApp de prueba." })
+      .catch(e => { avisosMsg = "❌ " + e.message }).finally(pintar);
+  }
+  else if (el.id === "avisosPrueba") {
+    avisosMsg = "Enviando…"; pintar();
+    avisosEnviar("/api/alertas/prueba", leer("avisosClave", "")).then(() => { avisosMsg = "Mensaje de prueba enviado." }).catch(e => { avisosMsg = "❌ " + e.message }).finally(pintar);
+  }
+  else if (el.id === "avisosApagar") {
+    const clave = leer("avisosClave", "");
+    avisosEnviar("/api/alertas", clave, {juegos: []}).catch(() => {});
+    guardar("avisosClave", ""); avisosMsg = "Avisos desactivados."; pintar();
+  }
   else if (el.dataset.guardar) alternarGuardado(el.dataset.guardar);
   else if (el.id === "volver") { if (history.state && history.state.q) history.back(); else irAlInicio() }
   else if (el.id === "actualizarTodo") actualizarTodo();
@@ -2104,7 +2154,7 @@ $("#imp").addEventListener("change", () => { guardar("imp2", $("#imp").value); a
 $("#tipoDolar").addEventListener("change", () => { guardar("tipoDolar2", $("#tipoDolar").value); actualizarAjustes(); pintar() });
 $("h1").addEventListener("click", () => { if (history.state && history.state.q) history.back(); else irAlInicio() });
 window.addEventListener("popstate", e => { if (e.state && e.state.q) buscar(e.state.q, true); else irAlInicio() });
-actualizarAjustes(); pintar(); cargarDolar().then(revisarSiHaceFalta);
+actualizarAjustes(); pintar(); cargarDolar().then(revisarSiHaceFalta); estadoAvisos();
 </script>
 </body>
 </html>
@@ -2136,6 +2186,30 @@ class Manejador(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def do_POST(self):
+        ruta = urllib.parse.urlparse(self.path).path
+        try:
+            largo = min(int(self.headers.get("Content-Length") or 0), 200_000)
+            datos = json.loads(self.rfile.read(largo) or b"{}")
+        except Exception:
+            return self._json({"error": "Pedido inválido"}, 400)
+        if ruta.startswith("/api/alertas"):
+            if not alertas_configuradas():
+                return self._json({"error": "Los avisos todavía no están configurados en el servidor"}, 503)
+            if str(datos.get("clave", "")).strip() != os.environ.get("WHATSAPP_APIKEY", ""):
+                return self._json({"error": "La clave no coincide con la de CallMeBot"}, 403)
+            try:
+                if ruta == "/api/alertas/prueba":
+                    enviar_whatsapp("✅ Avisos de Precios de Juegos activados. Te voy a escribir cuando haya ofertas de tus juegos, eventos nuevos y un resumen diario de mega ofertas.")
+                    return self._json({"ok": True})
+                if ruta == "/api/alertas":
+                    n = actualizar_lista_alertas(datos.get("juegos") or [])
+                    return self._json({"ok": True, "juegos": n})
+            except Exception as e:
+                print(f"[avisos] {type(e).__name__}: {e}", file=sys.stderr)
+                return self._json({"error": f"No se pudo: {describir_error(e)}"}, 502)
+        self._json({"error": "No encontrado"}, 404)
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         args = urllib.parse.parse_qs(url.query)
@@ -2152,6 +2226,8 @@ class Manejador(BaseHTTPRequestHandler):
             if not q:
                 return self._json({"error": "Falta el nombre del juego"}, 400)
             return self._json(buscar_todo(q, pais))
+        if ruta == "/api/alertas/estado":
+            return self._json({"configurado": alertas_configuradas()})
         if ruta == "/api/estado":
             r = estado_tiendas()
             return self._json(r, 200 if r["ok"] else 503)  # 503 hace fallar la revisión de GitHub
@@ -2178,6 +2254,200 @@ class Manejador(BaseHTTPRequestHandler):
 
     def log_message(self, formato, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), formato % args))
+
+
+# --------------------------------------------------------------------------
+# Avisos por WhatsApp (CallMeBot)
+# --------------------------------------------------------------------------
+# Configuración, en variables de entorno de Render (nunca en el código, que es público):
+#   WHATSAPP_TELEFONO      tu número con código de país, p. ej. +5491112345678
+#   WHATSAPP_APIKEY        la clave que da CallMeBot (también sirve de contraseña en la app)
+#   GITHUB_TOKEN_ALERTAS   token de GitHub con permiso de escribir el repositorio
+# La lista de juegos y lo ya avisado se guardan en el archivo alertas.json de la
+# rama "datos-alertas" del repositorio (así no se pierde cuando Render reinicia).
+# Para probar en la compu: ALERTAS_ARCHIVO=archivo.json y WHATSAPP_PRUEBA=1.
+
+REPO_ALERTAS = os.environ.get("REPO_ALERTAS", "facturacion-create/Precio-Juegos")
+RAMA_ALERTAS = "datos-alertas"
+_alertas_lock = threading.Lock()
+
+
+def alertas_configuradas():
+    return bool(os.environ.get("WHATSAPP_TELEFONO") and os.environ.get("WHATSAPP_APIKEY")
+                and (os.environ.get("GITHUB_TOKEN_ALERTAS") or os.environ.get("ALERTAS_ARCHIVO")))
+
+
+def _github(metodo, ruta, datos=None):
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{REPO_ALERTAS}/{ruta}", method=metodo,
+        data=json.dumps(datos).encode() if datos is not None else None,
+        headers={"Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN_ALERTAS', '')}",
+                 "Accept": "application/vnd.github+json", "User-Agent": USER_AGENT,
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def leer_alertas():
+    """(estado, sha). Estado vacío si todavía no existe."""
+    vacio = {"juegos": [], "avisados": {}, "eventos_vistos": [], "resumenes": {}, "ultimo_resumen": ""}
+    archivo = os.environ.get("ALERTAS_ARCHIVO")
+    if archivo:
+        try:
+            with open(archivo) as f:
+                return {**vacio, **json.load(f)}, None
+        except OSError:
+            return vacio, None
+    try:
+        r = _github("GET", f"contents/alertas.json?ref={RAMA_ALERTAS}")
+        import base64
+        return {**vacio, **json.loads(base64.b64decode(r["content"]).decode())}, r["sha"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return vacio, None
+        raise
+
+
+def guardar_alertas(estado, sha):
+    archivo = os.environ.get("ALERTAS_ARCHIVO")
+    texto = json.dumps(estado, ensure_ascii=False, indent=1)
+    if archivo:
+        with open(archivo, "w") as f:
+            f.write(texto)
+        return None
+    import base64
+    try:
+        _github("GET", f"git/ref/heads/{RAMA_ALERTAS}")
+    except urllib.error.HTTPError as e:  # crear la rama la primera vez
+        if e.code != 404:
+            raise
+        base = _github("GET", "git/ref/heads/main")["object"]["sha"]
+        _github("POST", "git/refs", {"ref": f"refs/heads/{RAMA_ALERTAS}", "sha": base})
+    datos = {"message": "Actualizar avisos de ofertas", "branch": RAMA_ALERTAS,
+             "content": base64.b64encode(texto.encode()).decode()}
+    if sha:
+        datos["sha"] = sha
+    return _github("PUT", "contents/alertas.json", datos).get("content", {}).get("sha")
+
+
+def enviar_whatsapp(texto):
+    """Manda uno o más mensajes (CallMeBot acepta textos no muy largos)."""
+    partes, actual = [], ""
+    for linea in texto.split("\n"):
+        if len(actual) + len(linea) > 1200:
+            partes.append(actual)
+            actual = ""
+        actual += linea + "\n"
+    partes.append(actual)
+    for i, parte in enumerate(p.strip() for p in partes if p.strip()):
+        if os.environ.get("WHATSAPP_PRUEBA"):
+            print("[WHATSAPP]\n" + parte, file=sys.stderr)
+            continue
+        url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode({
+            "phone": os.environ["WHATSAPP_TELEFONO"], "text": parte, "apikey": os.environ["WHATSAPP_APIKEY"]})
+        http_texto(url)
+        if i:
+            time.sleep(3)
+
+
+def _precio_final(precio, moneda):
+    """Precio con impuestos (IVA 21% + IIBB 2%) en pesos, con el dólar oficial."""
+    if moneda == "USD":
+        try:
+            precio *= cotizacion_dolar()["oficial"]["venta"]
+        except Exception:
+            return f"US$ {precio:.2f}"
+    elif moneda != "ARS":
+        return f"{moneda} {precio:.2f}"
+    return "$ " + f"{precio * 1.23:,.0f}".replace(",", ".")
+
+
+def _fecha_corta(iso):
+    try:
+        return f"{int(iso[8:10])}/{int(iso[5:7])}"
+    except Exception:
+        return ""
+
+
+def revisar_alertas(pais="AR"):
+    """Arma un mensaje con lo nuevo desde la última revisión y lo manda por WhatsApp."""
+    if not alertas_configuradas():
+        return None
+    with _alertas_lock:
+        estado, sha = leer_alertas()
+        lineas = []
+        # 1) Juegos de la lista en oferta
+        for j in estado.get("juegos", []):
+            try:
+                datos = buscar_todo(j["titulo"], j.get("pais", pais))
+            except Exception:
+                continue
+            for t in datos["tiendas"]:
+                mismos = [r for r in t["resultados"] if r.get("clave") == j["clave"] and r.get("tipo") != "extra"
+                          and r.get("precio_original") and r["precio"] > 0]
+                if not mismos:
+                    estado["avisados"].pop(f'{j["clave"]}|{t["tienda"]}', None)  # ya no está en oferta
+                    continue
+                r = min(mismos, key=lambda r: r["precio"])
+                pct = round((1 - r["precio"] / r["precio_original"]) * 100)
+                clave_aviso = f'{j["clave"]}|{t["tienda"]}'
+                if estado["avisados"].get(clave_aviso, 0) >= pct:
+                    continue  # ya avisado (o era mejor oferta)
+                estado["avisados"][clave_aviso] = pct
+                fin = f' (hasta el {_fecha_corta(r["termina"])})' if r.get("termina") else ""
+                lineas.append(f'🔥 *{j["titulo"]}*: -{pct}% en {t["tienda"]} → {_precio_final(r["precio"], r["moneda"])}{fin}')
+        if lineas:
+            lineas.insert(0, "⭐ *Tus juegos en oferta*")
+        # 2) Eventos nuevos
+        ofertas = _ofertas_listas.get(pais) or {}
+        nuevos = [e for e in ofertas.get("eventos", []) if e["nombre"] not in estado["eventos_vistos"]]
+        if nuevos:
+            lineas += ["", "🎉 *Eventos de ofertas nuevos*"]
+            for e in nuevos:
+                fin = f', hasta el {_fecha_corta(e["termina"])}' if e.get("termina") else ""
+                lineas.append(f'• {e["nombre"]} en {", ".join(e["tiendas"])} ({e["n"]} ofertas{fin})')
+                estado["eventos_vistos"].append(e["nombre"])
+        vigentes = {e["nombre"] for e in ofertas.get("eventos", [])}
+        if ofertas.get("eventos") is not None:  # olvidar los que terminaron (por si vuelven)
+            estado["eventos_vistos"] = [n for n in estado["eventos_vistos"] if n in vigentes]
+        # 3) Resumen diario de mega ofertas populares (después de las 10 de Argentina)
+        hoy = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 3 * 3600))
+        hora_ar = time.gmtime(time.time() - 3 * 3600).tm_hour
+        if ofertas.get("items") and estado.get("ultimo_resumen") != hoy and hora_ar >= 10:
+            limite = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 14 * 86400))
+            estado["resumenes"] = {k: v for k, v in estado["resumenes"].items() if v >= limite}
+            candidatos, vistos = [], set()
+            for i in sorted((i for i in ofertas["items"] if i["descuento"] >= 75 and i["url"] not in estado["resumenes"]),
+                            key=lambda i: (i.get("pop", 1), -i["descuento"])):
+                c = clave(i["titulo"])  # un solo renglón por juego (no uno por tienda o edición)
+                if c not in vistos:
+                    vistos.add(c)
+                    candidatos.append(i)
+                if len(candidatos) == 8:
+                    break
+            if candidatos:
+                lineas += ["", "💥 *Mega ofertas populares de hoy*"]
+                for i in candidatos:
+                    lineas.append(f'• {i["titulo"]}: -{i["descuento"]}% en {i["tienda"]} → {_precio_final(i["precio"], i["moneda"])}')
+                    estado["resumenes"][i["url"]] = hoy
+            estado["ultimo_resumen"] = hoy
+        if lineas:
+            lineas.append("\nAbrí la app para ver más: https://precio-juegos.onrender.com")
+            enviar_whatsapp("\n".join(lineas).strip())
+        guardar_alertas(estado, sha)
+        return "\n".join(lineas)
+
+
+def actualizar_lista_alertas(juegos):
+    with _alertas_lock:
+        estado, sha = leer_alertas()
+        claves = {j.get("clave") for j in juegos}
+        estado["juegos"] = [{"clave": j["clave"], "titulo": j["titulo"], "pais": j.get("pais", "AR")}
+                            for j in juegos if j.get("clave") and j.get("titulo")][:100]
+        # olvidar lo avisado de juegos que se sacaron de la lista
+        estado["avisados"] = {k: v for k, v in estado["avisados"].items() if k.split("|")[0] in claves}
+        guardar_alertas(estado, sha)
+        return len(estado["juegos"])
 
 
 _ofertas_listas = {}       # país -> última lista de ofertas terminada
@@ -2220,6 +2490,10 @@ def precalentar_descuentos():
     primera = True
     while True:
         armar_ofertas("AR")  # primero las ofertas, que es lo que más tarda
+        try:
+            revisar_alertas("AR")  # avisos por WhatsApp (si están configurados)
+        except Exception as e:
+            print(f"[avisos] {type(e).__name__}: {e}", file=sys.stderr)
         if primera:
             primera = False
             try:
