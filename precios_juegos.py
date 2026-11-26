@@ -1059,8 +1059,9 @@ def _descuentos_xbox_web(pais):
     mayor descuento, en general y por género (cada página trae 25 juegos)."""
     locale = PAISES.get(pais, {}).get("locale", "es-AR")
     canales = _eventos_xbox(locale) + [("DynamicChannel.GameDeals", None)]
-    tareas = [(c, o, g) for c, _ in canales for o in ("MostPopular desc", "DiscountPercentage desc")
-              for g in (None,) + XBOX_GENEROS]
+    # Por canal: general por más populares y por mayor descuento, y cada género por mayor descuento
+    tareas = [(c, o, None) for c, _ in canales for o in ("MostPopular desc", "DiscountPercentage desc")]
+    tareas += [(c, "DiscountPercentage desc", g) for c, _ in canales for g in XBOX_GENEROS]
     eventos = dict(canales)
     items, rango = {}, {}
     for (canal, orden, genero), pagina in zip(tareas, _pool_sub.map(lambda t: _xbox_pagina(*t, locale), tareas)):
@@ -1307,7 +1308,7 @@ def estado_tiendas(pais="AR"):
         resultado["Dólar"] = f"error: {describir_error(e)}"
     ok = ok and resultado["Dólar"] == "ok"
     try:
-        ofertas = mega_descuentos(pais)
+        ofertas = _ofertas_listas.get(pais) or mega_descuentos(pais)
         cuenta = {}
         for i in ofertas["items"]:
             cuenta[i["tienda"]] = cuenta.get(i["tienda"], 0) + 1
@@ -1816,16 +1817,33 @@ function pintarInicio() {
   return pintarAlertas() + tabs + (vista === "ofertas" ? pintarOfertas() : pintarBiblioteca());
 }
 
+// Muestra al instante la última lista guardada en el celular y, mientras tanto,
+// le pide al servidor la actual. Si el servidor se acaba de despertar, la lista se
+// arma en segundo plano: se vuelve a preguntar cada 4 segundos, sin cortar.
 async function cargarOfertas() {
-  ofertas = {cargando: true}; pintar();
-  try { ofertas = await (await fetch(`/api/descuentos?pais=${$("#pais").value}`)).json() }
-  catch { ofertas = {error: true} }
+  const pais = $("#pais").value;
+  let guardada = null;
+  try { guardada = JSON.parse(leer("ofertasGuardadas", "null")) } catch {}
+  ofertas = guardada && guardada.pais === pais && guardada.items ? {...guardada, vieja: true} : {cargando: true, pais};
   pintar();
+  for (let intento = 0; intento < 40; intento++) {
+    try {
+      const r = await (await fetch(`/api/descuentos?pais=${pais}`)).json();
+      if (r.items) {
+        ofertas = r; pintar();
+        try { localStorage.setItem("ofertasGuardadas", JSON.stringify(r)) } catch {}
+        return;
+      }
+    } catch {}
+    if (!ofertas.items) { ofertas = {cargando: true, pais, esperando: true}; pintar() }
+    await new Promise(ok => setTimeout(ok, 4000));
+  }
+  if (!ofertas.items) { ofertas = {error: true, pais}; pintar() }
 }
 
 function pintarOfertas() {
-  if (!ofertas || ofertas.pais !== $("#pais").value && !ofertas.cargando && !ofertas.error) { setTimeout(cargarOfertas); return '<div class="cargando">Buscando ofertas…</div>' }
-  if (ofertas.cargando) return '<div class="cargando">Buscando ofertas…</div>';
+  if (!ofertas || ofertas.pais !== $("#pais").value) { ofertas = {cargando: true, pais: $("#pais").value}; setTimeout(cargarOfertas); return '<div class="cargando">Buscando ofertas…</div>' }
+  if (ofertas.cargando) return `<div class="cargando">${ofertas.esperando ? "Preparando las ofertas… La app se acaba de despertar y puede tardar hasta un minuto." : "Buscando ofertas…"}</div>`;
   if (ofertas.error) return '<div class="vacio error">No se pudieron cargar las ofertas. Probá de nuevo en un rato.</div>';
   const tiendas = [...new Set(ofertas.items.map(i => i.tienda))];
   if (filtroTienda !== "todas" && !tiendas.includes(filtroTienda)) filtroTienda = "todas";
@@ -1859,7 +1877,7 @@ function pintarOfertas() {
     ${pastilla("tienda", filtroTienda, "todas", [["todas", "Tiendas", "Todas las tiendas"], ...tiendas.map(t => [t, corto(t)])])}
     ${pastilla("genero", filtroGenero, "todos", [["todos", "Géneros", "Todos los géneros"], ...generos.map(g => [g, g])])}
   </div>
-  <div class="resumen-filtros">${lista.length} ofertas${evSel && terminaTexto(evSel.termina) ? ` · <span class="vence">${esc(terminaTexto(evSel.termina))}</span>` : ""}${hayFiltros ? ` · <button class="link-btn" id="limpiarFiltros">Limpiar filtros</button>` : ""}</div>`;
+  <div class="resumen-filtros">${ofertas.vieja ? "Actualizando… · " : ""}${lista.length} ofertas${evSel && terminaTexto(evSel.termina) ? ` · <span class="vence">${esc(terminaTexto(evSel.termina))}</span>` : ""}${hayFiltros ? ` · <button class="link-btn" id="limpiarFiltros">Limpiar filtros</button>` : ""}</div>`;
 
   html += lista.length ? `<div class="ofertas">${lista.slice(0, mostrarOfertas).map(i => {
       const c = calcular(i), vence = terminaTexto(i.termina);
@@ -2143,7 +2161,7 @@ class Manejador(BaseHTTPRequestHandler):
         if ruta == "/api/descuentos":
             pais = (args.get("pais") or ["AR"])[0].upper()
             pais = pais if pais in PAISES else "AR"
-            return self._json(mega_descuentos(pais))
+            return self._json(ofertas_para(pais))
         if ruta == "/api/dolar":
             try:
                 return self._json(cotizacion_dolar())
@@ -2162,21 +2180,52 @@ class Manejador(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), formato % args))
 
 
+_ofertas_listas = {}       # país -> última lista de ofertas terminada
+_armando = set()
+_armando_lock = threading.Lock()
+
+
+def armar_ofertas(pais):
+    """Arma la lista de ofertas (tarda: en el servidor gratis puede pasar el minuto)
+    y la deja lista para los próximos pedidos."""
+    with _armando_lock:
+        if pais in _armando:
+            return
+        _armando.add(pais)
+    try:
+        with _cache_lock:
+            _cache.pop(("descuentos", pais, 30), None)
+        datos = dict(mega_descuentos(pais), actualizado=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        _ofertas_listas[pais] = datos
+    except Exception as e:
+        print(f"[ofertas {pais}] {type(e).__name__}: {e}", file=sys.stderr)
+    finally:
+        with _armando_lock:
+            _armando.discard(pais)
+
+
+def ofertas_para(pais):
+    """La lista lista, o {'cargando': True} si todavía se está armando (se arma en
+    segundo plano, así el pedido no queda colgado hasta que se corta)."""
+    if pais in _ofertas_listas:
+        return _ofertas_listas[pais]
+    threading.Thread(target=armar_ofertas, args=(pais,), daemon=True).start()
+    return {"cargando": True, "pais": pais}
+
+
 def precalentar_descuentos():
     """Arma la lista de ofertas apenas arranca el servidor y la renueva cada hora,
     para que la pestaña Mega descuentos abra rápido. También arma el vocabulario
     del corrector de errores de tipeo."""
-    try:
-        armar_vocabulario()
-    except Exception as e:
-        print(f"[vocabulario] {type(e).__name__}: {e}", file=sys.stderr)
+    primera = True
     while True:
-        try:
-            with _cache_lock:
-                _cache.pop(("descuentos", "AR", 30), None)
-            mega_descuentos("AR")
-        except Exception as e:
-            print(f"[precalentar] {type(e).__name__}: {e}", file=sys.stderr)
+        armar_ofertas("AR")  # primero las ofertas, que es lo que más tarda
+        if primera:
+            primera = False
+            try:
+                armar_vocabulario()
+            except Exception as e:
+                print(f"[vocabulario] {type(e).__name__}: {e}", file=sys.stderr)
         time.sleep(55 * 60)
 
 
