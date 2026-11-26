@@ -1612,6 +1612,7 @@ details>summary::-webkit-details-marker{display:none}
 .oferta .p{text-align:right;white-space:nowrap;font-weight:700}
 .oferta .p small{display:block;font-weight:400;font-size:.75rem;color:var(--sub);text-decoration:line-through}
 .avisos{background:var(--card);border:1px solid var(--borde);border-radius:16px;padding:12px 14px;margin-top:16px}
+.boton-link{display:inline-block;text-decoration:none;padding:8px 12px;border-radius:12px}
 .avisos .sub{font-size:.85rem;color:var(--sub);margin-top:4px}
 .vacio,.cargando{color:var(--sub);text-align:center;padding:28px 10px}
 .error{color:var(--err)}
@@ -1915,34 +1916,48 @@ function pintarBiblioteca() {
   ${pintarAvisos()}`;
 }
 
-/* ---------- Avisos por WhatsApp ---------- */
-let avisosServidor = null, avisosMsg = "";
+/* ---------- Avisos por Telegram ---------- */
+let avisosServidor = null, avisosMsg = "";  // ver pintarAvisos más abajo
 async function estadoAvisos() {
   try { avisosServidor = (await (await fetch("/api/alertas/estado")).json()).configurado } catch { avisosServidor = false }
   if (!ultimo && vista === "mis") pintar();
 }
 function pintarAvisos() {
   if (avisosServidor === null) return "";
-  const clave = leer("avisosClave", "");
+  const llave = leer("avisosLlave", "");
   let cuerpo;
   if (!avisosServidor) cuerpo = `<div class="sub">Todavía no están configurados en el servidor.</div>`;
-  else if (clave) cuerpo = `<div class="sub">✅ Activos: te llega un WhatsApp cuando un juego de tu lista entra en oferta, cuando arranca un evento y un resumen diario de mega ofertas.</div>
+  else if (llave) cuerpo = `<div class="sub">✅ Activos: te llega un mensaje cuando un juego de tu lista entra en oferta, cuando arranca un evento y un resumen diario de mega ofertas.</div>
       <div class="acciones"><button class="link-btn" id="avisosPrueba">Mandar mensaje de prueba</button><button class="link-btn" id="avisosApagar">Desactivar</button></div>`;
-  else cuerpo = `<div class="sub">Ingresá la clave (apikey) que te dio CallMeBot.</div>
-      <div class="acciones"><input id="avisosClave" type="password" placeholder="Clave de CallMeBot" autocomplete="off" style="flex:1;padding:9px 12px;font-size:16px"><button class="sec" id="avisosActivar">Activar</button></div>`;
-  return `<div class="avisos"><b>🔔 Avisos por WhatsApp</b>${cuerpo}${avisosMsg ? `<div class="sub" style="margin-top:6px">${esc(avisosMsg)}</div>` : ""}</div>`;
+  else if (avisosVinculo) cuerpo = `<div class="sub">1. Tocá el botón: se abre Telegram en el chat de tu bot.<br>2. Tocá <b>Iniciar</b> (o "Start").<br>3. Volvé acá: se conecta solo.</div>
+      <div class="acciones"><a class="sec boton-link" href="${esc(avisosVinculo.link)}" target="_blank" rel="noopener">Abrir Telegram</a><span class="sub">Esperando… (código ${esc(avisosVinculo.codigo)})</span></div>`;
+  else cuerpo = `<div class="sub">Recibí en Telegram las ofertas de tus juegos, los eventos nuevos y un resumen diario.</div>
+      <div class="acciones"><span></span><button class="sec" id="avisosActivar">Activar</button></div>`;
+  return `<div class="avisos"><b>🔔 Avisos por Telegram</b>${cuerpo}${avisosMsg ? `<div class="sub" style="margin-top:6px">${esc(avisosMsg)}</div>` : ""}</div>`;
 }
-async function avisosEnviar(ruta, clave, extra = {}) {
-  const r = await fetch(ruta, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({clave, ...extra})});
+let avisosVinculo = null;
+async function avisosEnviar(ruta, extra = {}) {
+  const r = await fetch(ruta, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({llave: leer("avisosLlave", ""), ...extra})});
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || "No se pudo");
   return d;
 }
+const listaParaAvisos = () => biblioteca().map(j => ({clave: j.clave, titulo: j.titulo, pais: j.pais}));
 // Manda la lista de Mis juegos al servidor (si los avisos están activos)
 async function sincronizarAvisos() {
-  const clave = leer("avisosClave", "");
-  if (!clave || !avisosServidor) return;
-  try { await avisosEnviar("/api/alertas", clave, {juegos: biblioteca().map(j => ({clave: j.clave, titulo: j.titulo, pais: j.pais}))}) } catch {}
+  if (!leer("avisosLlave", "") || !avisosServidor) return;
+  try { await avisosEnviar("/api/alertas", {juegos: listaParaAvisos()}) } catch {}
+}
+// Después de tocar "Activar": pregunta cada 3 segundos si ya tocaste Iniciar en Telegram
+async function esperarVinculo() {
+  for (let i = 0; i < 200 && avisosVinculo; i++) {
+    await new Promise(ok => setTimeout(ok, 3000));
+    if (!avisosVinculo) return;
+    try {
+      const d = await avisosEnviar("/api/alertas/confirmar", {codigo: avisosVinculo.codigo, juegos: listaParaAvisos()});
+      if (d.llave) { guardar("avisosLlave", d.llave); avisosVinculo = null; avisosMsg = "¡Listo! Te mandé un mensaje en Telegram."; pintar(); return }
+    } catch (e) { avisosVinculo = null; avisosMsg = "❌ " + e.message; pintar(); return }
+  }
 }
 
 /* ---------- Alertas de ofertas de Mis juegos ---------- */
@@ -2111,7 +2126,7 @@ $("#sug").addEventListener("pointerdown", e => e.preventDefault());  // que el c
 $("#sug").addEventListener("click", e => { const b = e.target.closest("[data-sug]"); if (b) buscar(b.dataset.sug) });
 $("#q").addEventListener("blur", () => setTimeout(ocultarSugerencias, 150));
 $("#res").addEventListener("click", e => {
-  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros,#verTodos");
+  const el = e.target.closest("[data-guardar],[data-buscar],[data-borrar],[data-vista],#actualizarTodo,#masOfertas,#volver,#limpiarFiltros,#verTodos,#avisosActivar,#avisosPrueba,#avisosApagar");
   if (!el) return;
   if (el.dataset.vista) { vista = el.dataset.vista; guardar("vista", vista); pintar() }
   else if (el.dataset.pct) { filtroPct = Number(el.dataset.pct); guardar("filtroPct", filtroPct); mostrarOfertas = 40; pintar() }
@@ -2129,21 +2144,17 @@ $("#res").addEventListener("click", e => {
   else if (el.dataset.buscar) { if (el.dataset.pais && el.dataset.pais !== $("#pais").value) { $("#pais").value = el.dataset.pais; actualizarAjustes() } buscar(el.dataset.buscar, false, el.dataset.clave) }
   else if (el.dataset.borrar) { const b = biblioteca(); b.splice(Number(el.dataset.borrar), 1); guardarBiblioteca(b); pintar(); sincronizarAvisos() }
   else if (el.id === "avisosActivar") {
-    const clave = $("#avisosClave").value.trim(); if (!clave) return;
-    avisosMsg = "Activando…"; pintar();
-    avisosEnviar("/api/alertas", clave, {juegos: biblioteca().map(j => ({clave: j.clave, titulo: j.titulo, pais: j.pais}))})
-      .then(() => avisosEnviar("/api/alertas/prueba", clave))
-      .then(() => { guardar("avisosClave", clave); avisosMsg = "Listo: te mandé un WhatsApp de prueba." })
-      .catch(e => { avisosMsg = "❌ " + e.message }).finally(pintar);
+    avisosMsg = ""; pintar();
+    avisosEnviar("/api/alertas/vincular").then(d => { avisosVinculo = d; pintar(); esperarVinculo() })
+      .catch(e => { avisosMsg = "❌ " + e.message; pintar() });
   }
   else if (el.id === "avisosPrueba") {
     avisosMsg = "Enviando…"; pintar();
-    avisosEnviar("/api/alertas/prueba", leer("avisosClave", "")).then(() => { avisosMsg = "Mensaje de prueba enviado." }).catch(e => { avisosMsg = "❌ " + e.message }).finally(pintar);
+    avisosEnviar("/api/alertas/prueba").then(() => { avisosMsg = "Mensaje de prueba enviado." }).catch(e => { avisosMsg = "❌ " + e.message }).finally(pintar);
   }
   else if (el.id === "avisosApagar") {
-    const clave = leer("avisosClave", "");
-    avisosEnviar("/api/alertas", clave, {juegos: []}).catch(() => {});
-    guardar("avisosClave", ""); avisosMsg = "Avisos desactivados."; pintar();
+    avisosEnviar("/api/alertas/desactivar").catch(() => {});
+    guardar("avisosLlave", ""); avisosMsg = "Avisos desactivados."; pintar();
   }
   else if (el.dataset.guardar) alternarGuardado(el.dataset.guardar);
   else if (el.id === "volver") { if (history.state && history.state.q) history.back(); else irAlInicio() }
@@ -2196,15 +2207,34 @@ class Manejador(BaseHTTPRequestHandler):
         if ruta.startswith("/api/alertas"):
             if not alertas_configuradas():
                 return self._json({"error": "Los avisos todavía no están configurados en el servidor"}, 503)
-            if str(datos.get("clave", "")).strip() != os.environ.get("WHATSAPP_APIKEY", ""):
-                return self._json({"error": "La clave no coincide con la de CallMeBot"}, 403)
             try:
+                if ruta == "/api/alertas/vincular":
+                    return self._json(vincular_inicio())
+                if ruta == "/api/alertas/confirmar":
+                    llave = vincular_confirmar(str(datos.get("codigo", "")))
+                    if not llave:
+                        return self._json({"esperando": True})
+                    actualizar_lista_alertas(datos.get("juegos") or [])
+                    estado, _ = leer_alertas()
+                    enviar_aviso("✅ *Avisos de Precios de Juegos activados.* Te voy a escribir cuando un juego de tu lista entre en oferta, cuando arranque un evento de ofertas y con un resumen diario de mega ofertas.", estado["chat_id"])
+                    return self._json({"ok": True, "llave": llave})
+                if not llave_valida(str(datos.get("llave", ""))):
+                    return self._json({"error": "Los avisos no están conectados en este celular. Tocá Activar."}, 403)
                 if ruta == "/api/alertas/prueba":
-                    enviar_whatsapp("✅ Avisos de Precios de Juegos activados. Te voy a escribir cuando haya ofertas de tus juegos, eventos nuevos y un resumen diario de mega ofertas.")
+                    estado, _ = leer_alertas()
+                    enviar_aviso("🔔 Mensaje de prueba de *Precios de Juegos*. ¡Funciona!", estado["chat_id"])
                     return self._json({"ok": True})
                 if ruta == "/api/alertas":
                     n = actualizar_lista_alertas(datos.get("juegos") or [])
                     return self._json({"ok": True, "juegos": n})
+                if ruta == "/api/alertas/desactivar":
+                    with _alertas_lock:
+                        estado, sha = leer_alertas()
+                        estado.update(chat_id=None, llave="", juegos=[])
+                        guardar_alertas(estado, sha)
+                    return self._json({"ok": True})
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
             except Exception as e:
                 print(f"[avisos] {type(e).__name__}: {e}", file=sys.stderr)
                 return self._json({"error": f"No se pudo: {describir_error(e)}"}, 502)
@@ -2257,15 +2287,15 @@ class Manejador(BaseHTTPRequestHandler):
 
 
 # --------------------------------------------------------------------------
-# Avisos por WhatsApp (CallMeBot)
+# Avisos por Telegram
 # --------------------------------------------------------------------------
 # Configuración, en variables de entorno de Render (nunca en el código, que es público):
-#   WHATSAPP_TELEFONO      tu número con código de país, p. ej. +5491112345678
-#   WHATSAPP_APIKEY        la clave que da CallMeBot (también sirve de contraseña en la app)
+#   TELEGRAM_TOKEN         el código del bot que da @BotFather en Telegram
 #   GITHUB_TOKEN_ALERTAS   token de GitHub con permiso de escribir el repositorio
-# La lista de juegos y lo ya avisado se guardan en el archivo alertas.json de la
-# rama "datos-alertas" del repositorio (así no se pierde cuando Render reinicia).
-# Para probar en la compu: ALERTAS_ARCHIVO=archivo.json y WHATSAPP_PRUEBA=1.
+# La conexión con tu chat se hace desde la app ("Activar" -> se abre Telegram -> Iniciar).
+# La lista de juegos, el chat y lo ya avisado se guardan en el archivo alertas.json de
+# la rama "datos-alertas" del repositorio (así no se pierde cuando Render reinicia).
+# Para probar en la compu: ALERTAS_ARCHIVO=archivo.json y TELEGRAM_PRUEBA=1.
 
 REPO_ALERTAS = os.environ.get("REPO_ALERTAS", "facturacion-create/Precio-Juegos")
 RAMA_ALERTAS = "datos-alertas"
@@ -2273,8 +2303,64 @@ _alertas_lock = threading.Lock()
 
 
 def alertas_configuradas():
-    return bool(os.environ.get("WHATSAPP_TELEFONO") and os.environ.get("WHATSAPP_APIKEY")
+    return bool(os.environ.get("TELEGRAM_TOKEN")
                 and (os.environ.get("GITHUB_TOKEN_ALERTAS") or os.environ.get("ALERTAS_ARCHIVO")))
+
+
+def _telegram(metodo, **params):
+    if os.environ.get("TELEGRAM_PRUEBA"):
+        if metodo == "getMe":
+            return {"result": {"username": "PreciosDeJuegosPruebaBot"}}
+        if metodo == "getUpdates":
+            return {"result": [{"update_id": 1, "message": {"chat": {"id": 999}, "text": f"/start {c}"}} for c in _codigos]}
+        print(f"[TELEGRAM {metodo}]\n{params.get('text', '')}", file=sys.stderr)
+        return {"result": {}}
+    url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_TOKEN']}/{metodo}"
+    req = urllib.request.Request(url, data=json.dumps(params).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return json.loads(r.read().decode())
+
+
+_codigos = {}  # código de vinculación -> momento en que se pidió
+
+
+def vincular_inicio():
+    """Genera un código para conectar tu chat de Telegram (vale 10 minutos)."""
+    import secrets
+    ahora = time.time()
+    for c, t in list(_codigos.items()):
+        if ahora - t > 600:
+            _codigos.pop(c, None)
+    codigo = "".join(secrets.choice("0123456789") for _ in range(6))
+    _codigos[codigo] = ahora
+    bot = _telegram("getMe")["result"]["username"]
+    return {"codigo": codigo, "bot": bot, "link": f"https://t.me/{bot}?start={codigo}"}
+
+
+def vincular_confirmar(codigo):
+    """Busca en los mensajes del bot el '/start <código>' y guarda ese chat.
+    Devuelve la llave para que la app pueda actualizar la lista (o None si todavía no llegó)."""
+    import secrets
+    if codigo not in _codigos:
+        raise ValueError("El código venció: tocá Activar de nuevo")
+    for u in reversed(_telegram("getUpdates", timeout=0, allowed_updates=["message"]).get("result", [])):
+        m = u.get("message") or {}
+        if (m.get("text") or "").strip() in (f"/start {codigo}", codigo):
+            with _alertas_lock:
+                estado, sha = leer_alertas()
+                estado["chat_id"] = m["chat"]["id"]
+                estado["llave"] = secrets.token_urlsafe(24)
+                guardar_alertas(estado, sha)
+            _codigos.pop(codigo, None)
+            _telegram("getUpdates", offset=u["update_id"] + 1, timeout=0)  # marcar como leído
+            return estado["llave"]
+    return None
+
+
+def llave_valida(llave):
+    estado, _ = leer_alertas()
+    return bool(llave) and llave == estado.get("llave")
 
 
 def _github(metodo, ruta, datos=None):
@@ -2290,7 +2376,8 @@ def _github(metodo, ruta, datos=None):
 
 def leer_alertas():
     """(estado, sha). Estado vacío si todavía no existe."""
-    vacio = {"juegos": [], "avisados": {}, "eventos_vistos": [], "resumenes": {}, "ultimo_resumen": ""}
+    vacio = {"juegos": [], "avisados": {}, "eventos_vistos": [], "resumenes": {}, "ultimo_resumen": "",
+             "chat_id": None, "llave": ""}
     archivo = os.environ.get("ALERTAS_ARCHIVO")
     if archivo:
         try:
@@ -2330,24 +2417,21 @@ def guardar_alertas(estado, sha):
     return _github("PUT", "contents/alertas.json", datos).get("content", {}).get("sha")
 
 
-def enviar_whatsapp(texto):
-    """Manda uno o más mensajes (CallMeBot acepta textos no muy largos)."""
+def enviar_aviso(texto, chat_id):
+    """Manda el aviso por Telegram (negritas con *texto*; divide si es muy largo)."""
+    if not chat_id:
+        return
     partes, actual = [], ""
     for linea in texto.split("\n"):
-        if len(actual) + len(linea) > 1200:
+        if len(actual) + len(linea) > 3500:
             partes.append(actual)
             actual = ""
         actual += linea + "\n"
     partes.append(actual)
-    for i, parte in enumerate(p.strip() for p in partes if p.strip()):
-        if os.environ.get("WHATSAPP_PRUEBA"):
-            print("[WHATSAPP]\n" + parte, file=sys.stderr)
-            continue
-        url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode({
-            "phone": os.environ["WHATSAPP_TELEFONO"], "text": parte, "apikey": os.environ["WHATSAPP_APIKEY"]})
-        http_texto(url)
-        if i:
-            time.sleep(3)
+    for parte in (p.strip() for p in partes if p.strip()):
+        cuerpo = html.escape(parte)
+        cuerpo = re.sub(r"\*(.+?)\*", r"<b>\1</b>", cuerpo)
+        _telegram("sendMessage", chat_id=chat_id, text=cuerpo, parse_mode="HTML", disable_web_page_preview=True)
 
 
 def _precio_final(precio, moneda):
@@ -2370,11 +2454,13 @@ def _fecha_corta(iso):
 
 
 def revisar_alertas(pais="AR"):
-    """Arma un mensaje con lo nuevo desde la última revisión y lo manda por WhatsApp."""
+    """Arma un mensaje con lo nuevo desde la última revisión y lo manda por Telegram."""
     if not alertas_configuradas():
         return None
     with _alertas_lock:
         estado, sha = leer_alertas()
+        if not estado.get("chat_id"):
+            return None  # todavía no se conectó el chat desde la app
         lineas = []
         # 1) Juegos de la lista en oferta
         for j in estado.get("juegos", []):
@@ -2433,7 +2519,7 @@ def revisar_alertas(pais="AR"):
             estado["ultimo_resumen"] = hoy
         if lineas:
             lineas.append("\nAbrí la app para ver más: https://precio-juegos.onrender.com")
-            enviar_whatsapp("\n".join(lineas).strip())
+            enviar_aviso("\n".join(lineas).strip(), estado["chat_id"])
         guardar_alertas(estado, sha)
         return "\n".join(lineas)
 
@@ -2491,7 +2577,7 @@ def precalentar_descuentos():
     while True:
         armar_ofertas("AR")  # primero las ofertas, que es lo que más tarda
         try:
-            revisar_alertas("AR")  # avisos por WhatsApp (si están configurados)
+            revisar_alertas("AR")  # avisos por Telegram (si están configurados)
         except Exception as e:
             print(f"[avisos] {type(e).__name__}: {e}", file=sys.stderr)
         if primera:
